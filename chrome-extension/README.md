@@ -4,11 +4,13 @@
 
 ## 功能特点
 
-✅ **完全自动化** - 安装后无需任何手动操作
-✅ **不会被检测** - 在真实浏览器中运行，使用真实 Cookie
-✅ **定时签到** - 每天 09:00 自动执行签到
-✅ **手动签到** - 点击扩展图标可立即签到
-✅ **实时通知** - 签到完成后桌面通知
+✅ **自动 OAuth 登录** - 基于 linux.do OAuth2.0 完成站点登录  
+✅ **后台签到** - 定时或手动触发批量签到  
+✅ **定时签到** - 默认每天 09:00 自动执行签到，可在弹窗中修改
+✅ **手动签到** - 点击扩展图标可立即签到  
+✅ **站点跳转** - 点击站点列表中的站点名打开签到页面  
+✅ **配置导入导出** - 支持站点配置备份和迁移  
+✅ **Badge 状态** - 扩展图标显示签到进度和结果  
 ✅ **可视化界面** - 查看签到状态和历史记录
 
 ---
@@ -25,8 +27,12 @@ chrome-extension/
 ├── popup.html
 ├── popup.js
 ├── config.js
+├── schedule.js
+├── site-url.js
 └── icons/
-    └── (图标文件，可选)
+    ├── icon16.png
+    ├── icon48.png
+    └── icon128.png
 ```
 
 ### 2. 安装到 Chrome
@@ -52,21 +58,25 @@ chrome-extension/
 
 ### 首次使用
 
-1. **登录目标网站**
-   - 在 Chrome 中打开 https://ai.xingyungept.cn
-   - 使用 linux.do 账号登录
-   - 对其他站点重复此操作
+1. **登录 linux.do**
+   - 确保当前 Chrome 已登录 linux.do
 
-2. **测试签到**
+2. **添加站点**
+   - 点击扩展图标
+   - 点击“添加站点”
+   - 输入域名或完整签到页链接，例如 `example.com` 或 `https://www.baidu.com/console/personal`
+
+3. **测试签到**
    - 点击扩展图标
    - 点击"立即签到"按钮
    - 查看签到结果
 
 ### 日常使用
 
-- **自动签到**：每天 09:00 自动执行，无需操作
+- **自动签到**：默认每天 09:00 自动执行，可在扩展弹窗中修改
 - **手动签到**：随时点击扩展图标 → 立即签到
 - **查看状态**：点击扩展图标查看签到历史
+- **打开站点**：点击站点列表中的站点名，可打开该站点的签到页面
 
 ---
 
@@ -74,40 +84,27 @@ chrome-extension/
 
 ### 修改自动签到时间
 
-编辑 `config.js` 文件：
-
-```javascript
-const GLOBAL_CONFIG = {
-  autoSignTime: '09:00', // 修改为你想要的时间（24小时制）
-  retryTimes: 2,
-  requestTimeout: 10000
-};
-```
-
-修改后需要重新加载扩展：
-1. 打开 `chrome://extensions/`
-2. 找到本扩展
-3. 点击"重新加载"按钮
+点击扩展图标，在弹窗中的“每日签到”时间选择器里选择时间并保存。默认时间仍由 `config.js` 中的 `GLOBAL_CONFIG.autoSignTime` 提供。
 
 ### 添加新站点
 
-编辑 `config.js` 文件，在 `SITES_CONFIG` 数组中添加：
+在弹窗中点击“添加站点”，输入域名或完整签到页链接即可。输入完整链接时，扩展会保存域名用于签到接口，同时保存链接用于站点列表点击跳转。
+
+也可以编辑 `config.js` 文件，在 `DEFAULT_SITES` 数组中添加：
 
 ```javascript
-{
-  siteId: 'new_site',
-  siteName: 'example.com',
-  enabled: true,
-  cookieDomain: 'example.com',
-  signExecUrl: 'https://example.com/api/checkin',
-  signExecMethod: 'POST',
-  signExecParams: {},
-  signQueryUrl: 'https://example.com/api/checkin',
-  signQueryMethod: 'GET',
-  cookieTestUrl: 'https://example.com/',
-  unauthKeywords: ['未登录', '请登录']
-}
+const DEFAULT_SITES = [
+  { domain: 'example.com', name: 'example.com', enabled: true },
+  {
+    domain: 'www.baidu.com',
+    name: 'www.baidu.com',
+    enabled: true,
+    pageUrl: 'https://www.baidu.com/console/personal'
+  }
+];
 ```
+
+`pageUrl` 是可选字段。未配置时，点击站点名会默认打开 `https://域名/console/personal`。
 
 ### 禁用某个站点
 
@@ -180,25 +177,35 @@ const GLOBAL_CONFIG = {
 - **cookies**：读取网站 Cookie 用于签到
 - **storage**：保存签到记录和配置
 - **alarms**：设置定时任务
-- **notifications**：发送签到通知
+- **tabs**：打开站点页面并辅助 OAuth 登录
+- **scripting**：在标签页上下文中完成 OAuth、请求头捕获和 Cloudflare 兼容处理
+- **webRequest**：捕获站点页面发出的认证请求头
 
 ### 数据安全
 
 - ✅ 所有数据存储在本地（Chrome Storage）
 - ✅ Cookie 不会上传到任何服务器
-- ✅ 仅访问配置的目标网站
 - ✅ 开源代码，可审计
 
 ### 工作原理
 
-1. 扩展从 Chrome 读取目标网站的 Cookie
-2. 使用 Cookie 发送 HTTP 请求到签到接口
-3. 解析响应结果，判断签到是否成功
-4. 保存结果并发送通知
+1. 扩展从站点接口读取 linux.do OAuth 配置
+2. 在浏览器标签页中完成 linux.do OAuth 授权
+3. 捕获目标站点认证请求头并缓存到本地
+4. 调用 New API 签到接口
+5. 保存签到结果并通过 Badge 展示状态
+6. 当检测到认证过期或 Cloudflare 拦截时，自动重新登录或切换到标签页执行
 
 ---
 
 ## 更新日志
+
+### v1.1.0
+
+- 支持在弹窗中修改每日自动签到时间
+- 支持在添加站点时输入完整签到页链接
+- 站点列表中的站点名可点击打开签到页面
+- 弹窗版本号更新为 v1.1.0
 
 ### v1.0.0 (2026-03-08)
 - ✨ 首次发布
@@ -206,7 +213,7 @@ const GLOBAL_CONFIG = {
 - ✅ 定时签到功能
 - ✅ 手动签到功能
 - ✅ 可视化界面
-- ✅ 桌面通知
+- ✅ Badge 状态提示
 
 ---
 

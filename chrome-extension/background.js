@@ -1,14 +1,13 @@
 // 导入配置
-importScripts('config.js');
+importScripts('schedule.js', 'config.js');
+
+const DAILY_CHECK_IN_ALARM = 'dailyCheckIn';
 
 // 安装时初始化
 chrome.runtime.onInstalled.addListener(() => {
   console.log('多网站自动签到助手已安装');
 
-  chrome.alarms.create('dailyCheckIn', {
-    when: getNextCheckInTime(),
-    periodInMinutes: 24 * 60
-  });
+  scheduleDailyCheckIn();
 
   chrome.storage.local.set({
     lastCheckInTime: null,
@@ -16,9 +15,13 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
+chrome.runtime.onStartup.addListener(() => {
+  scheduleDailyCheckIn();
+});
+
 // 监听定时器
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === 'dailyCheckIn') {
+  if (alarm.name === DAILY_CHECK_IN_ALARM) {
     console.log('开始执行定时签到');
     executeAllCheckIns();
   }
@@ -36,8 +39,28 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === 'getStatus') {
-    chrome.storage.local.get(['lastCheckInTime', 'checkInResults'], (data) => {
-      sendResponse(data);
+    chrome.storage.local.get(['lastCheckInTime', 'checkInResults', 'autoSignTime'], (data) => {
+      sendResponse({
+        ...data,
+        autoSignTime: isValidAutoSignTime(data.autoSignTime) ? data.autoSignTime : GLOBAL_CONFIG.autoSignTime
+      });
+    });
+    return true;
+  }
+
+  if (request.action === 'updateAutoSignTime') {
+    const time = request.time;
+    if (!isValidAutoSignTime(time)) {
+      sendResponse({ success: false, error: '无效的时间格式' });
+      return false;
+    }
+
+    chrome.storage.local.set({ autoSignTime: time }).then(() => {
+      return scheduleDailyCheckIn(time);
+    }).then((autoSignTime) => {
+      sendResponse({ success: true, autoSignTime });
+    }).catch((error) => {
+      sendResponse({ success: false, error: error.message });
     });
     return true;
   }
@@ -921,13 +944,21 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function getNextCheckInTime() {
-  const now = new Date();
-  const [hours, minutes] = GLOBAL_CONFIG.autoSignTime.split(':').map(Number);
-  const next = new Date();
-  next.setHours(hours, minutes, 0, 0);
-  if (next <= now) {
-    next.setDate(next.getDate() + 1);
-  }
-  return next.getTime();
+async function getAutoSignTime() {
+  const data = await chrome.storage.local.get('autoSignTime');
+  return isValidAutoSignTime(data.autoSignTime) ? data.autoSignTime : GLOBAL_CONFIG.autoSignTime;
+}
+
+async function scheduleDailyCheckIn(time) {
+  const autoSignTime = isValidAutoSignTime(time) ? time : await getAutoSignTime();
+  const nextRun = getNextCheckInTimeFor(autoSignTime);
+
+  await chrome.alarms.clear(DAILY_CHECK_IN_ALARM);
+  await chrome.alarms.create(DAILY_CHECK_IN_ALARM, {
+    when: nextRun,
+    periodInMinutes: 24 * 60
+  });
+
+  console.log(`每日签到时间已设置为 ${autoSignTime}`);
+  return autoSignTime;
 }

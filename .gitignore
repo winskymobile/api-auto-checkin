@@ -20,3 +20,5 @@ Thumbs.db
 # User data
 chrome-extension/user-data/
 
+# Local tests
+tests/

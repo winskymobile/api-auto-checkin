@@ -7,8 +7,10 @@
 - **自动 OAuth 登录**：自动完成 linux.do OAuth2 授权流程
 - **后台签到**：完全后台执行，不打开可见窗口
 - **Badge 通知**：扩展图标显示签到进度和结果
-- **定时签到**：每天 09:00 自动执行签到
+- **定时签到**：默认每天 09:00 自动执行签到，可在扩展弹窗中修改
 - **站点管理**：可视化添加、删除、启用/禁用站点
+- **站点跳转**：站点列表中的站点名可点击，直接打开对应签到页面
+- **完整链接添加**：添加站点时支持输入域名或完整签到页链接
 - **配置导入导出**：支持站点配置的备份和迁移
 - **缓存机制**：认证信息缓存，减少重复登录
 - **Cloudflare 防护绕过**：自动检测并绕过 Cloudflare Bot Management
@@ -28,12 +30,12 @@
 1. 确保已在 linux.do 登录
 2. 点击扩展图标打开弹窗
 3. 点击"+ 添加站点"按钮
-4. 输入站点域名（如 `example.com`）
+4. 输入站点域名或签到页链接（如 `example.com` 或 `https://www.baidu.com/console/personal`）
 5. 点击"立即签到"测试
 
 ### 自动签到
 
-扩展会在每天 09:00 自动执行签到，无需手动操作。
+扩展默认会在每天 09:00 自动执行签到，也可以在扩展弹窗中选择自己的每日签到时间。
 
 ### Badge 通知
 
@@ -46,6 +48,7 @@
 
 - **启用/禁用**：点击站点前的开关
 - **删除站点**：点击站点右侧的 "×" 按钮
+- **打开站点**：点击站点名打开签到页面
 - **查看状态**：每个站点显示最近一次签到结果
 
 ### 配置导入导出
@@ -59,7 +62,7 @@
 
 所有使用 New API 平台且支持 linux.do OAuth 登录的站点。
 
-添加新站点时，只需输入域名即可，扩展会自动配置签到接口。
+添加新站点时，可以输入域名，扩展会自动配置签到接口；也可以输入完整签到页链接，站点列表点击时会直接打开该页面。
 
 ## 技术说明
 
@@ -116,9 +119,8 @@ New API 平台使用两种认证方式：
 
 ### 无法添加站点
 
-1. 确保输入的是有效域名（如 `example.com`）
-2. 不要包含 `https://` 或路径
-3. 域名必须包含 `.`
+1. 确保输入的是有效域名（如 `example.com`）或完整链接（如 `https://www.baidu.com/console/personal`）
+2. 域名必须包含 `.`
 
 ### Badge 不显示
 
@@ -131,9 +133,11 @@ New API 平台使用两种认证方式：
 chrome-extension/
 ├── manifest.json       # 扩展清单
 ├── background.js       # 后台服务（OAuth、签到逻辑）
-├── config.js          # 配置文件（默认站点、全局配置）
-├── popup.html         # 弹窗界面
-├── popup.js           # 弹窗脚本（UI 交互）
+├── config.js           # 配置文件（默认站点、全局配置）
+├── schedule.js         # 定时签到时间校验和下次执行时间计算
+├── site-url.js         # 站点输入解析和签到页面跳转 URL 生成
+├── popup.html          # 弹窗界面
+├── popup.js            # 弹窗脚本（UI 交互）
 └── icons/             # 扩展图标
     ├── icon16.png
     ├── icon48.png
@@ -144,14 +148,7 @@ chrome-extension/
 
 ### 修改定时时间
 
-编辑 `config.js` 中的 `GLOBAL_CONFIG.autoSignTime`：
-
-```javascript
-const GLOBAL_CONFIG = {
-  autoSignTime: '09:00',  // 修改为你想要的时间
-  // ...
-};
-```
+点击扩展图标，在弹窗中的“每日签到”时间选择器里选择时间并保存。默认时间仍由 `config.js` 中的 `GLOBAL_CONFIG.autoSignTime` 提供。
 
 ### 添加默认站点
 
@@ -160,15 +157,38 @@ const GLOBAL_CONFIG = {
 ```javascript
 const DEFAULT_SITES = [
   { domain: 'example.com', name: 'Example Site', enabled: true },
+  {
+    domain: 'www.baidu.com',
+    name: 'www.baidu.com',
+    enabled: true,
+    pageUrl: 'https://www.baidu.com/console/personal'
+  },
   // 添加更多站点...
 ];
 ```
+
+`pageUrl` 是可选字段。未配置时，点击站点名会默认打开 `https://域名/console/personal`。
 
 ### 调试
 
 1. 打开 `chrome://extensions/`
 2. 找到扩展，点击"service worker"
 3. 在 DevTools 中查看日志
+
+## 更新日志
+
+### v1.1.0
+
+- 支持在弹窗中修改每日自动签到时间
+- 支持在添加站点时输入完整签到页链接
+- 站点列表中的站点名可点击打开签到页面
+- 弹窗版本号更新为 v1.1.0
+
+### v1.0.0
+
+- 首次发布多站点自动签到扩展
+- 支持 linux.do OAuth 自动登录
+- 支持手动签到、定时签到、Badge 状态提示和配置导入导出
 
 ## 许可证
 

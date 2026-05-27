@@ -26,6 +26,7 @@ function setupEventListeners() {
     document.getElementById('importFile').click();
   });
   document.getElementById('importFile').addEventListener('change', handleImport);
+  document.getElementById('saveTimeBtn').addEventListener('click', handleSaveAutoSignTime);
 }
 
 // 加载签到状态
@@ -35,6 +36,9 @@ function loadStatus() {
     if (response?.lastCheckInTime) {
       document.getElementById('lastCheck').textContent =
         `上次签到: ${formatDateTime(new Date(response.lastCheckInTime))}`;
+    }
+    if (response?.autoSignTime) {
+      setAutoSignTimeDisplay(response.autoSignTime);
     }
   });
 }
@@ -71,9 +75,12 @@ async function renderSites(results) {
     toggle.addEventListener('change', () => toggleSite(index, toggle.checked));
 
     // 站点名
-    const name = document.createElement('span');
-    name.className = 'site-name';
+    const name = document.createElement('button');
+    name.type = 'button';
+    name.className = 'site-name site-link';
     name.textContent = site.name || site.domain;
+    name.title = `打开 ${getSitePageUrl(site)}`;
+    name.addEventListener('click', () => openSitePage(site));
 
     // 状态
     const status = document.createElement('span');
@@ -120,28 +127,29 @@ function updateStats(results) {
 // 添加站点
 async function handleAddSite() {
   const input = document.getElementById('newDomain');
-  let domain = input.value.trim().toLowerCase();
+  const site = parseSiteInput(input.value);
 
-  // 清理输入：去掉协议和路径
-  domain = domain.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
-
-  if (!domain || !domain.includes('.')) {
-    alert('请输入有效的域名，如 example.com');
+  if (!site) {
+    alert('请输入有效的域名或签到页链接，如 example.com');
     return;
   }
 
   const sites = await loadRawSites();
-  if (sites.some(s => s.domain === domain)) {
+  if (sites.some(s => s.domain === site.domain)) {
     alert('该站点已存在');
     return;
   }
 
-  sites.push({ domain, name: domain, enabled: true });
+  sites.push(site);
   await saveSitesConfig(sites);
 
   input.value = '';
   document.getElementById('addForm').classList.remove('show');
   renderSites();
+}
+
+function openSitePage(site) {
+  chrome.tabs.create({ url: getSitePageUrl(site) });
 }
 
 // 切换启用/禁用
@@ -210,6 +218,45 @@ function formatDateTime(date) {
   const h = String(date.getHours()).padStart(2, '0');
   const min = String(date.getMinutes()).padStart(2, '0');
   return `${m}-${d} ${h}:${min}`;
+}
+
+async function handleSaveAutoSignTime() {
+  const input = document.getElementById('autoSignTime');
+  const status = document.getElementById('timeStatus');
+  const btn = document.getElementById('saveTimeBtn');
+  const time = input.value;
+
+  status.classList.remove('error');
+  status.textContent = '';
+
+  if (!isValidAutoSignTime(time)) {
+    status.classList.add('error');
+    status.textContent = '请选择有效时间';
+    return;
+  }
+
+  btn.disabled = true;
+  try {
+    const response = await new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage({ action: 'updateAutoSignTime', time }, (response) => {
+        if (response?.success) resolve(response);
+        else reject(new Error(response?.error || '保存失败'));
+      });
+    });
+
+    setAutoSignTimeDisplay(response.autoSignTime);
+    status.textContent = `已保存为 ${response.autoSignTime}`;
+  } catch (error) {
+    status.classList.add('error');
+    status.textContent = error.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function setAutoSignTimeDisplay(time) {
+  document.getElementById('autoSignTime').value = time;
+  document.getElementById('autoSignTimeLabel').textContent = time;
 }
 
 // 导出配置

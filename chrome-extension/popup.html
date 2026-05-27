@@ -93,6 +93,19 @@
     }
     .site-item .toggle { cursor: pointer; flex-shrink: 0; }
     .site-item .site-name { flex: 1; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .site-item .site-link {
+      min-width: 0;
+      background: none;
+      border: none;
+      color: #495057;
+      cursor: pointer;
+      font: inherit;
+      padding: 0;
+      text-align: left;
+    }
+    .site-item .site-link:hover {
+      color: #667eea;
+    }
     .site-status {
       padding: 3px 10px;
       border-radius: 10px;
@@ -141,6 +154,44 @@
       margin-top: 10px;
     }
 
+    .settings-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid #eee;
+      font-size: 12px;
+    }
+    .settings-row label {
+      color: #555;
+      font-weight: 600;
+      flex-shrink: 0;
+    }
+    .settings-row input[type="time"] {
+      flex: 1;
+      min-width: 0;
+      padding: 6px 8px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-size: 12px;
+      outline: none;
+    }
+    .settings-row input[type="time"]:focus { border-color: #667eea; }
+    .settings-row .btn {
+      flex-shrink: 0;
+      background: #667eea;
+      color: white;
+    }
+    .settings-status {
+      min-height: 16px;
+      margin-top: 6px;
+      font-size: 11px;
+      color: #28a745;
+      text-align: right;
+    }
+    .settings-status.error { color: #dc3545; }
+
     .loading { text-align: center; padding: 16px; color: #666; }
     .spinner {
       border: 3px solid #f3f3f3;
@@ -169,7 +220,7 @@
   <div class="container">
     <div class="header">
       <h1>多网站自动签到</h1>
-      <p>New API 站点自动签到 | 每天 09:00</p>
+      <p>New API 站点自动签到 | 每天 <span id="autoSignTimeLabel">09:00</span></p>
     </div>
 
     <div class="card">
@@ -206,8 +257,15 @@
       </div>
       <input type="file" id="importFile" accept=".json" style="display: none;">
 
+      <div class="settings-row">
+        <label for="autoSignTime">每日签到</label>
+        <input type="time" id="autoSignTime" value="09:00">
+        <button class="btn btn-sm" id="saveTimeBtn">保存</button>
+      </div>
+      <div class="settings-status" id="timeStatus"></div>
+
       <div class="add-form" id="addForm">
-        <input type="text" id="newDomain" placeholder="输入域名，如 example.com">
+        <input type="text" id="newDomain" placeholder="输入域名或签到页链接，如 example.com">
         <div class="form-actions">
           <button class="btn btn-primary" id="confirmAddBtn">添加</button>
           <button class="btn btn-cancel" id="cancelAddBtn">取消</button>
@@ -217,9 +275,11 @@
       <div class="last-check" id="lastCheck">暂无签到记录</div>
     </div>
 
-    <div class="footer">v1.0.0</div>
+    <div class="footer">v1.1.0</div>
   </div>
 
+  <script src="schedule.js"></script>
+  <script src="site-url.js"></script>
   <script src="config.js"></script>
   <script src="popup.js"></script>
 </body>
