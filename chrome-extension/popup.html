@@ -7,25 +7,104 @@
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
+    :root {
+      color-scheme: light dark;
+      --page-bg: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      --header-text: #ffffff;
+      --surface: #ffffff;
+      --surface-muted: #f8f9fa;
+      --surface-subtle: #f0f0f0;
+      --text: #333333;
+      --text-muted: #666666;
+      --text-soft: #555555;
+      --border: #eeeeee;
+      --input-border: #dddddd;
+      --primary: #667eea;
+      --primary-strong: #764ba2;
+      --on-primary: #ffffff;
+      --primary-shadow: rgba(102,126,234,0.4);
+      --success: #28a745;
+      --success-hover: #218838;
+      --success-bg: #d4edda;
+      --success-text: #155724;
+      --info: #17a2b8;
+      --info-bg: #d1ecf1;
+      --info-text: #0c5460;
+      --danger: #dc3545;
+      --danger-hover: #a71d2a;
+      --danger-bg: #f8d7da;
+      --danger-text: #721c24;
+      --warning: #ffc107;
+      --warning-bg: #fff3cd;
+      --warning-text: #856404;
+      --neutral-bg: #e9ecef;
+      --neutral-text: #495057;
+      --secondary-button-bg: #6c757d;
+      --visit-bg: #e7f1ff;
+      --visit-text: #0b5ed7;
+      --shadow: 0 4px 6px rgba(0,0,0,0.1);
+      --focus-ring: rgba(102,126,234,0.18);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --page-bg: linear-gradient(135deg, #20263d 0%, #332447 100%);
+        --header-text: #f8fafc;
+        --surface: #171923;
+        --surface-muted: #222635;
+        --surface-subtle: #1f2330;
+        --text: #e5e7eb;
+        --text-muted: #aeb6c8;
+        --text-soft: #c3cad8;
+        --border: #2f3547;
+        --input-border: #3a4053;
+        --primary: #9aa8ff;
+        --primary-strong: #b794f4;
+        --on-primary: #12141f;
+        --primary-shadow: rgba(154,168,255,0.28);
+        --success: #5bd178;
+        --success-hover: #45b965;
+        --success-bg: #173622;
+        --success-text: #9be7ad;
+        --info: #5ccfe6;
+        --info-bg: #12333e;
+        --info-text: #9be4f2;
+        --danger: #ff7b8a;
+        --danger-hover: #ff9aa5;
+        --danger-bg: #421d25;
+        --danger-text: #ffb1bb;
+        --warning: #f6c75b;
+        --warning-bg: #3c3117;
+        --warning-text: #ffe29a;
+        --neutral-bg: #2b3040;
+        --neutral-text: #d1d6e5;
+        --secondary-button-bg: #3a4053;
+        --visit-bg: #182f55;
+        --visit-text: #a8ccff;
+        --shadow: 0 8px 22px rgba(0,0,0,0.32);
+        --focus-ring: rgba(154,168,255,0.22);
+      }
+    }
+
     body {
       width: 420px;
       min-height: 300px;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: #333;
+      background: var(--page-bg);
+      color: var(--text);
     }
 
     .container { padding: 16px; }
 
-    .header { text-align: center; color: white; margin-bottom: 16px; }
+    .header { text-align: center; color: var(--header-text); margin-bottom: 16px; }
     .header h1 { font-size: 18px; margin-bottom: 4px; }
     .header p { font-size: 11px; opacity: 0.9; }
 
     .card {
-      background: white;
+      background: var(--surface);
       border-radius: 12px;
       padding: 16px;
-      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+      box-shadow: var(--shadow);
       margin-bottom: 12px;
     }
 
@@ -34,11 +113,14 @@
       justify-content: space-around;
       margin-bottom: 12px;
       padding-bottom: 12px;
-      border-bottom: 1px solid #eee;
+      border-bottom: 1px solid var(--border);
     }
     .status-item { text-align: center; }
-    .status-label { font-size: 11px; color: #666; margin-bottom: 3px; }
-    .status-value { font-size: 18px; font-weight: bold; color: #667eea; }
+    .status-label { font-size: 11px; color: var(--text-muted); margin-bottom: 3px; }
+    .status-value { font-size: 18px; font-weight: bold; color: var(--primary); }
+    .status-value.success-count { color: var(--success); }
+    .status-value.already-count { color: var(--info); }
+    .status-value.failed-count { color: var(--danger); }
 
     .btn {
       width: 100%;
@@ -51,10 +133,10 @@
       transition: all 0.2s;
     }
     .btn-primary {
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: white;
+      background: linear-gradient(135deg, var(--primary) 0%, var(--primary-strong) 100%);
+      color: var(--on-primary);
     }
-    .btn-primary:hover { box-shadow: 0 4px 12px rgba(102,126,234,0.4); }
+    .btn-primary:hover { box-shadow: 0 4px 12px var(--primary-shadow); }
     .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
 
     .btn-sm {
@@ -64,20 +146,35 @@
       border-radius: 6px;
     }
     .btn-add {
-      background: #28a745;
+      background: var(--success);
       color: white;
       margin-top: 10px;
     }
-    .btn-add:hover { background: #218838; }
+    .btn-add:hover { background: var(--success-hover); }
     .btn-del {
       background: none;
-      color: #dc3545;
+      color: var(--danger);
       padding: 2px 6px;
       font-size: 16px;
       cursor: pointer;
       border: none;
     }
-    .btn-del:hover { color: #a71d2a; }
+    .btn-del:hover { color: var(--danger-hover); }
+    .btn-export {
+      flex: 1;
+      background: var(--info);
+      color: white;
+    }
+    .btn-import {
+      flex: 1;
+      background: var(--warning);
+      color: #333;
+    }
+    .config-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+    }
 
     .sites-list { margin-top: 12px; }
 
@@ -86,7 +183,7 @@
       align-items: center;
       padding: 8px 10px;
       margin-bottom: 6px;
-      background: #f8f9fa;
+      background: var(--surface-muted);
       border-radius: 8px;
       font-size: 12px;
       gap: 8px;
@@ -97,14 +194,14 @@
       min-width: 0;
       background: none;
       border: none;
-      color: #495057;
+      color: var(--neutral-text);
       cursor: pointer;
       font: inherit;
       padding: 0;
       text-align: left;
     }
     .site-item .site-link:hover {
-      color: #667eea;
+      color: var(--primary);
     }
     .site-status {
       padding: 3px 10px;
@@ -113,22 +210,22 @@
       font-weight: bold;
       flex-shrink: 0;
     }
-    .site-status.success { background: #d4edda; color: #155724; }
-    .site-status.already { background: #d1ecf1; color: #0c5460; }
-    .site-status.failed { background: #f8d7da; color: #721c24; }
-    .site-status.pending { background: #fff3cd; color: #856404; }
+    .site-status.success { background: var(--success-bg); color: var(--success-text); }
+    .site-status.already { background: var(--info-bg); color: var(--info-text); }
+    .site-status.failed { background: var(--danger-bg); color: var(--danger-text); }
+    .site-status.pending { background: var(--warning-bg); color: var(--warning-text); }
     .site-mode {
       padding: 3px 8px;
       border-radius: 10px;
       font-size: 10px;
       font-weight: bold;
       flex-shrink: 0;
-      background: #e9ecef;
-      color: #495057;
+      background: var(--neutral-bg);
+      color: var(--neutral-text);
     }
     .site-mode.visit {
-      background: #e7f1ff;
-      color: #0b5ed7;
+      background: var(--visit-bg);
+      color: var(--visit-text);
     }
 
     /* Add site form */
@@ -136,7 +233,7 @@
       display: none;
       margin-top: 10px;
       padding: 10px;
-      background: #f0f0f0;
+      background: var(--surface-subtle);
       border-radius: 8px;
     }
     .add-form.show { display: block; }
@@ -154,7 +251,7 @@
       display: flex;
       align-items: center;
       gap: 4px;
-      color: #555;
+      color: var(--text-soft);
       cursor: pointer;
       flex-shrink: 0;
       font-size: 12px;
@@ -167,12 +264,18 @@
     .add-form input[type="text"] {
       width: 100%;
       padding: 8px 10px;
-      border: 1px solid #ddd;
+      border: 1px solid var(--input-border);
       border-radius: 6px;
       font-size: 13px;
       outline: none;
+      background: var(--surface);
+      color: var(--text);
     }
-    .add-form input[type="text"]:focus { border-color: #667eea; }
+    .add-form input[type="text"]:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px var(--focus-ring);
+    }
+    .add-form input[type="text"]::placeholder { color: var(--text-muted); }
     .add-form .form-actions {
       display: flex;
       gap: 8px;
@@ -181,12 +284,12 @@
       flex: 1;
       padding: 8px;
     }
-    .btn-cancel { background: #6c757d; color: white; }
+    .btn-cancel { background: var(--secondary-button-bg); color: white; }
 
     .last-check {
       text-align: center;
       font-size: 11px;
-      color: #666;
+      color: var(--text-muted);
       margin-top: 10px;
     }
 
@@ -196,11 +299,11 @@
       gap: 8px;
       margin-top: 12px;
       padding-top: 12px;
-      border-top: 1px solid #eee;
+      border-top: 1px solid var(--border);
       font-size: 12px;
     }
     .settings-row label {
-      color: #555;
+      color: var(--text-soft);
       font-weight: 600;
       flex-shrink: 0;
     }
@@ -208,30 +311,35 @@
       flex: 1;
       min-width: 0;
       padding: 6px 8px;
-      border: 1px solid #ddd;
+      border: 1px solid var(--input-border);
       border-radius: 6px;
       font-size: 12px;
       outline: none;
+      background: var(--surface);
+      color: var(--text);
     }
-    .settings-row input[type="time"]:focus { border-color: #667eea; }
+    .settings-row input[type="time"]:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px var(--focus-ring);
+    }
     .settings-row .btn {
       flex-shrink: 0;
-      background: #667eea;
-      color: white;
+      background: var(--primary);
+      color: var(--on-primary);
     }
     .settings-status {
       min-height: 16px;
       margin-top: 6px;
       font-size: 11px;
-      color: #28a745;
+      color: var(--success);
       text-align: right;
     }
-    .settings-status.error { color: #dc3545; }
+    .settings-status.error { color: var(--danger); }
 
-    .loading { text-align: center; padding: 16px; color: #666; }
+    .loading { text-align: center; padding: 16px; color: var(--text-muted); }
     .spinner {
-      border: 3px solid #f3f3f3;
-      border-top: 3px solid #667eea;
+      border: 3px solid var(--surface-subtle);
+      border-top: 3px solid var(--primary);
       border-radius: 50%;
       width: 24px;
       height: 24px;
@@ -245,7 +353,7 @@
 
     .footer {
       text-align: center;
-      color: white;
+      color: var(--header-text);
       font-size: 10px;
       margin-top: 10px;
       opacity: 0.8;
@@ -267,15 +375,15 @@
         </div>
         <div class="status-item">
           <div class="status-label">成功</div>
-          <div class="status-value" id="successCount" style="color:#28a745">-</div>
+          <div class="status-value success-count" id="successCount">-</div>
         </div>
         <div class="status-item">
           <div class="status-label">已签</div>
-          <div class="status-value" id="alreadyCount" style="color:#17a2b8">-</div>
+          <div class="status-value already-count" id="alreadyCount">-</div>
         </div>
         <div class="status-item">
           <div class="status-label">失败</div>
-          <div class="status-value" id="failedCount" style="color:#dc3545">-</div>
+          <div class="status-value failed-count" id="failedCount">-</div>
         </div>
       </div>
 
@@ -301,9 +409,9 @@
         </div>
       </div>
 
-      <div style="display: flex; gap: 8px; margin-top: 8px;">
-        <button class="btn btn-sm" style="flex: 1; background: #17a2b8; color: white;" id="exportBtn">导出配置</button>
-        <button class="btn btn-sm" style="flex: 1; background: #ffc107; color: #333;" id="importBtn">导入配置</button>
+      <div class="config-actions">
+        <button class="btn btn-sm btn-export" id="exportBtn">导出配置</button>
+        <button class="btn btn-sm btn-import" id="importBtn">导入配置</button>
       </div>
       <input type="file" id="importFile" accept=".json" style="display: none;">
 
