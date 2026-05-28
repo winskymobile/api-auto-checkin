@@ -44,7 +44,9 @@ function loadStatus() {
 }
 
 // 渲染站点列表
-async function renderSites(results) {
+async function renderSites(results, { preserveScroll = false } = {}) {
+  const scrollContainer = document.scrollingElement || document.documentElement;
+  const scrollTop = preserveScroll ? scrollContainer.scrollTop : 0;
   const sites = await loadRawSites();
   const sitesList = document.getElementById('sitesList');
   sitesList.innerHTML = '';
@@ -55,6 +57,11 @@ async function renderSites(results) {
   if (!results) {
     const data = await chrome.storage.local.get('checkInResults');
     results = data.checkInResults || {};
+  }
+
+  if (sites.length === 0) {
+    sitesList.innerHTML = '<div class="empty-state">暂无站点，添加后即可开始签到</div>';
+    return;
   }
 
   sites.forEach((site, index) => {
@@ -125,6 +132,12 @@ async function renderSites(results) {
     item.appendChild(del);
     sitesList.appendChild(item);
   });
+
+  if (preserveScroll) {
+    requestAnimationFrame(() => {
+      scrollContainer.scrollTop = scrollTop;
+    });
+  }
 }
 
 // 更新统计数字
@@ -179,7 +192,7 @@ async function toggleSite(index, enabled) {
   if (sites[index]) {
     sites[index].enabled = enabled;
     await saveSitesConfig(sites);
-    renderSites();
+    await renderSites(undefined, { preserveScroll: true });
   }
 }
 
