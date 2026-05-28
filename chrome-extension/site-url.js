@@ -9,7 +9,14 @@
     return null;
   }
 
-  function parseSiteInput(input) {
+  function applySiteMode(site, mode) {
+    if (mode === 'visit') {
+      return { ...site, mode: 'visit' };
+    }
+    return site;
+  }
+
+  function parseSiteInput(input, mode = 'checkin') {
     const rawInput = String(input || '').trim();
     const trimmed = rawInput.toLowerCase();
     if (!trimmed) return null;
@@ -20,12 +27,12 @@
         const url = new URL(normalizedUrl);
         if (!url.hostname || !url.hostname.includes('.')) return null;
         const domain = url.hostname.toLowerCase();
-        return {
+        return applySiteMode({
           domain,
           name: domain,
           enabled: true,
           pageUrl: url.href
-        };
+        }, mode);
       } catch (e) {
         return null;
       }
@@ -33,11 +40,11 @@
 
     const domain = trimmed.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
     if (!domain || !domain.includes('.')) return null;
-    return {
+    return applySiteMode({
       domain,
       name: domain,
       enabled: true
-    };
+    }, mode);
   }
 
   function getSitePageUrl(site) {

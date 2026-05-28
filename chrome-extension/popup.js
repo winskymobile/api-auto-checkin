@@ -14,7 +14,7 @@ function setupEventListeners() {
   document.getElementById('confirmAddBtn').addEventListener('click', handleAddSite);
   document.getElementById('cancelAddBtn').addEventListener('click', () => {
     document.getElementById('addForm').classList.remove('show');
-    document.getElementById('newDomain').value = '';
+    resetAddForm();
   });
   document.getElementById('newDomain').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') handleAddSite();
@@ -101,6 +101,16 @@ async function renderSites(results) {
       status.textContent = enabled ? '待签' : '禁用';
     }
 
+    // 模式
+    const mode = document.createElement('span');
+    mode.className = 'site-mode';
+    if (site.mode === 'visit') {
+      mode.classList.add('visit');
+      mode.textContent = '访问';
+    } else {
+      mode.textContent = '签到';
+    }
+
     // 删除按钮
     const del = document.createElement('button');
     del.className = 'btn-del';
@@ -109,6 +119,7 @@ async function renderSites(results) {
     del.addEventListener('click', () => removeSite(index));
 
     item.appendChild(toggle);
+    item.appendChild(mode);
     item.appendChild(name);
     item.appendChild(status);
     item.appendChild(del);
@@ -127,7 +138,8 @@ function updateStats(results) {
 // 添加站点
 async function handleAddSite() {
   const input = document.getElementById('newDomain');
-  const site = parseSiteInput(input.value);
+  const mode = getSelectedSiteMode();
+  const site = parseSiteInput(input.value, mode);
 
   if (!site) {
     alert('请输入有效的域名或签到页链接，如 example.com');
@@ -143,9 +155,18 @@ async function handleAddSite() {
   sites.push(site);
   await saveSitesConfig(sites);
 
-  input.value = '';
+  resetAddForm();
   document.getElementById('addForm').classList.remove('show');
   renderSites();
+}
+
+function getSelectedSiteMode() {
+  return document.getElementById('visitOnly').checked ? 'visit' : 'checkin';
+}
+
+function resetAddForm() {
+  document.getElementById('newDomain').value = '';
+  document.getElementById('visitOnly').checked = false;
 }
 
 function openSitePage(site) {
@@ -262,12 +283,12 @@ function setAutoSignTimeDisplay(time) {
 // 导出配置
 async function handleExport() {
   const sites = await loadRawSites();
+  const { autoSignTime } = await chrome.storage.local.get('autoSignTime');
+  const currentAutoSignTime = isValidAutoSignTime(autoSignTime)
+    ? autoSignTime
+    : document.getElementById('autoSignTime').value;
 
-  const config = {
-    version: '1.0',
-    exportTime: new Date().toISOString(),
-    sites: sites
-  };
+  const config = buildExportConfig(sites, currentAutoSignTime);
 
   const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -330,6 +351,13 @@ async function handleImport(event) {
     }
 
     await saveSitesConfig(finalSites);
+
+    const importedAutoSignTime = getImportAutoSignTime(config);
+    if (importedAutoSignTime) {
+      await chrome.runtime.sendMessage({ action: 'updateAutoSignTime', time: importedAutoSignTime });
+      setAutoSignTimeDisplay(importedAutoSignTime);
+    }
+
     renderSites();
   } catch (error) {
     alert('导入失败: ' + error.message);

@@ -13,10 +13,13 @@ const GLOBAL_CONFIG = {
 // 从域名生成完整站点配置（所有 New API 站点通用）
 function buildSiteConfig(site) {
   const d = site.domain;
+  const mode = site.mode === 'visit' ? 'visit' : 'checkin';
   return {
     siteId: d.replace(/\./g, '_'),
     siteName: site.name || d,
     enabled: site.enabled !== false,
+    mode,
+    visitUrl: site.pageUrl || `https://${d}/console/personal`,
     cookieDomain: d,
     signExecUrl: `https://${d}/api/user/checkin`,
     signExecMethod: 'POST',
@@ -44,4 +47,10 @@ async function saveSitesConfig(sites) {
 async function loadRawSites() {
   const data = await chrome.storage.local.get('userSites');
   return data.userSites || DEFAULT_SITES;
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    buildSiteConfig
+  };
 }

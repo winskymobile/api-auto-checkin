@@ -90,12 +90,12 @@ async function executeAllCheckIns() {
     chrome.action.setBadgeText({ text: `${current}/${total}` });
 
     try {
-      console.log(`开始签到: ${site.siteName}`);
-      const result = await checkInSite(site);
+      console.log(`开始执行: ${site.siteName} (${site.mode})`);
+      const result = site.mode === 'visit' ? await visitSite(site) : await checkInSite(site);
       results[site.siteId] = result;
-      console.log(`${site.siteName} 签到结果:`, result);
+      console.log(`${site.siteName} 执行结果:`, result);
     } catch (error) {
-      console.error(`${site.siteName} 签到失败:`, error);
+      console.error(`${site.siteName} 执行失败:`, error);
       results[site.siteId] = {
         status: 'failed',
         message: error.message
@@ -132,6 +132,51 @@ async function executeAllCheckIns() {
   }, 5000);
 
   return results;
+}
+
+// 单个站点访问
+async function visitSite(site) {
+  let tab;
+  try {
+    tab = await chrome.tabs.create({
+      url: site.visitUrl,
+      active: false
+    });
+
+    await waitForTabComplete(tab.id, 20000);
+    await sleep(3000);
+
+    const tabInfo = await chrome.tabs.get(tab.id);
+    if (!tabInfo.url || tabInfo.url.startsWith('chrome-error://')) {
+      return { status: 'failed', message: '访问失败' };
+    }
+
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => ({
+        url: location.href,
+        title: document.title,
+        readyState: document.readyState,
+        bodyLength: document.body?.innerText?.length || 0
+      })
+    });
+
+    const page = results[0]?.result;
+    if (!page || page.url.startsWith('chrome-error://')) {
+      return { status: 'failed', message: '访问失败' };
+    }
+
+    const loaded = page.readyState === 'complete' || page.readyState === 'interactive';
+    if (!loaded) {
+      return { status: 'failed', message: '页面未完成加载' };
+    }
+
+    return { status: 'success', message: '已访问' };
+  } finally {
+    if (tab?.id) {
+      try { await chrome.tabs.remove(tab.id); } catch (e) {}
+    }
+  }
 }
 
 // 单个站点签到
