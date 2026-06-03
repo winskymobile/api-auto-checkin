@@ -10,21 +10,41 @@ const GLOBAL_CONFIG = {
   requestTimeout: 10000
 };
 
+function normalizeSiteType(type) {
+  return ['auto', 'newapi', 'sub2api', 'zenapi'].includes(type) ? type : 'newapi';
+}
+
 // 从域名生成完整站点配置（所有 New API 站点通用）
 function buildSiteConfig(site) {
   const d = site.domain;
   const mode = site.mode === 'visit' ? 'visit' : 'checkin';
+  const type = mode === 'visit' ? 'visit' : normalizeSiteType(site.type);
+  const apiBasePathByType = {
+    sub2api: '/api/v1/user/check-in',
+    zenapi: '/api/u/checkin'
+  };
+  const defaultPagePathByType = {
+    sub2api: '/check-in',
+    zenapi: '/user'
+  };
+  const queryPathByType = {
+    zenapi: '/api/u/dashboard'
+  };
+  const apiBasePath = apiBasePathByType[type] || '/api/user/checkin';
+  const defaultPagePath = defaultPagePathByType[type] || '/console/personal';
+  const queryPath = queryPathByType[type] || apiBasePath;
   return {
     siteId: d.replace(/\./g, '_'),
     siteName: site.name || d,
     enabled: site.enabled !== false,
     mode,
-    visitUrl: site.pageUrl || `https://${d}/console/personal`,
+    type,
+    visitUrl: site.pageUrl || `https://${d}${defaultPagePath}`,
     cookieDomain: d,
-    signExecUrl: `https://${d}/api/user/checkin`,
+    signExecUrl: `https://${d}${apiBasePath}`,
     signExecMethod: 'POST',
     signExecParams: {},
-    signQueryUrl: `https://${d}/api/user/checkin`,
+    signQueryUrl: `https://${d}${queryPath}`,
     signQueryMethod: 'GET',
     cookieTestUrl: `https://${d}/`,
     unauthKeywords: ['未登录', '请登录']
@@ -51,6 +71,7 @@ async function loadRawSites() {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
-    buildSiteConfig
+    buildSiteConfig,
+    normalizeSiteType
   };
 }

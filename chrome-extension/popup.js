@@ -108,14 +108,18 @@ async function renderSites(results, { preserveScroll = false } = {}) {
       status.textContent = enabled ? '待签' : '禁用';
     }
 
-    // 模式
+    // 模式/类型
     const mode = document.createElement('span');
     mode.className = 'site-mode';
     if (site.mode === 'visit') {
       mode.classList.add('visit');
       mode.textContent = '访问';
     } else {
-      mode.textContent = '签到';
+      const siteType = site.type || 'newapi';
+      if (siteType === 'sub2api') mode.classList.add('sub2api');
+      if (siteType === 'zenapi') mode.classList.add('zenapi');
+      if (siteType === 'auto') mode.classList.add('auto');
+      mode.textContent = getSiteTypeLabel(siteType);
     }
 
     // 删除按钮
@@ -177,13 +181,20 @@ function getSelectedSiteMode() {
   return document.getElementById('visitOnly').checked ? 'visit' : 'checkin';
 }
 
+function getSiteTypeLabel(type) {
+  if (type === 'sub2api') return 'Sub2';
+  if (type === 'zenapi') return 'Zen';
+  if (type === 'auto') return '自动';
+  return 'New';
+}
+
 function resetAddForm() {
   document.getElementById('newDomain').value = '';
   document.getElementById('visitOnly').checked = false;
 }
 
 function openSitePage(site) {
-  chrome.tabs.create({ url: getSitePageUrl(site) });
+  chrome.tabs.create(getSiteTabCreateOptions(site));
 }
 
 // 切换启用/禁用

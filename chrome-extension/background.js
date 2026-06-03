@@ -1,5 +1,5 @@
 // 导入配置
-importScripts('schedule.js', 'config.js');
+importScripts('schedule.js', 'config.js', 'auth-headers.js', 'checkin-result.js', 'newapi-auth.js', 'zenapi-auth.js');
 
 const DAILY_CHECK_IN_ALARM = 'dailyCheckIn';
 
@@ -90,10 +90,11 @@ async function executeAllCheckIns() {
     chrome.action.setBadgeText({ text: `${current}/${total}` });
 
     try {
-      console.log(`开始执行: ${site.siteName} (${site.mode})`);
-      const result = site.mode === 'visit' ? await visitSite(site) : await checkInSite(site);
+      const resolvedSite = site.mode === 'visit' ? site : await resolveSiteType(site);
+      console.log(`开始执行: ${resolvedSite.siteName} (${resolvedSite.mode}/${resolvedSite.type})`);
+      const result = resolvedSite.mode === 'visit' ? await visitSite(resolvedSite) : await checkInSite(resolvedSite);
       results[site.siteId] = result;
-      console.log(`${site.siteName} 执行结果:`, result);
+      console.log(`${resolvedSite.siteName} 执行结果:`, result);
     } catch (error) {
       console.error(`${site.siteName} 执行失败:`, error);
       results[site.siteId] = {
@@ -179,8 +180,115 @@ async function visitSite(site) {
   }
 }
 
+async function resolveSiteType(site) {
+  if (site.type !== 'auto') return site;
+
+  const detectedType = await detectSiteType(site);
+  await updateRawSiteType(site.cookieDomain, detectedType);
+
+  return buildSiteConfig({
+    domain: site.cookieDomain,
+    name: site.siteName,
+    enabled: site.enabled,
+    type: detectedType,
+    pageUrl: getResolvedVisitUrl(site, detectedType)
+  });
+}
+
+function getResolvedVisitUrl(site, type) {
+  if (type === 'sub2api' && site.visitUrl.endsWith('/console/personal')) {
+    return `https://${site.cookieDomain}/check-in`;
+  }
+  if (type === 'zenapi' && site.visitUrl.endsWith('/console/personal')) {
+    return `https://${site.cookieDomain}/user`;
+  }
+  return site.visitUrl;
+}
+
+async function detectSiteType(site) {
+  let tab;
+  try {
+    tab = await getOrCreateTab(site.cookieDomain, site.visitUrl);
+    await waitForTabComplete(tab.id, 15000);
+    await sleep(1000);
+
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: async () => {
+        const appConfig = window.__APP_CONFIG__ || {};
+        if (
+          Object.prototype.hasOwnProperty.call(appConfig, 'api_base_url') ||
+          Object.prototype.hasOwnProperty.call(appConfig, 'linuxdo_oauth_enabled') ||
+          location.pathname === '/check-in'
+        ) {
+          return 'sub2api';
+        }
+
+        try {
+          const response = await fetch('/api/public/site-info', { credentials: 'include' });
+          const data = await response.json();
+          if (
+            Object.prototype.hasOwnProperty.call(data, 'site_mode') ||
+            Object.prototype.hasOwnProperty.call(data, 'registration_mode') ||
+            Object.prototype.hasOwnProperty.call(data, 'linuxdo_enabled') ||
+            location.pathname.startsWith('/user')
+          ) {
+            return 'zenapi';
+          }
+        } catch (e) {
+          if (location.pathname.startsWith('/user')) return 'zenapi';
+        }
+
+        try {
+          const response = await fetch('/api/status', { credentials: 'include' });
+          const data = await response.json();
+          if (data?.data?.linuxdo_client_id || data?.linuxdo_client_id) {
+            return 'newapi';
+          }
+        } catch (e) {}
+
+        return 'newapi';
+      }
+    });
+
+    if (results[0]?.result === 'sub2api') return 'sub2api';
+    if (results[0]?.result === 'zenapi') return 'zenapi';
+    return 'newapi';
+  } catch (e) {
+    console.warn(`${site.siteName} 自动识别站点类型失败，回退 New API:`, e);
+    return 'newapi';
+  } finally {
+    if (tab?._autoCreated) {
+      try { await chrome.tabs.remove(tab.id); } catch (e) {}
+    }
+  }
+}
+
+async function updateRawSiteType(domain, type) {
+  const sites = await loadRawSites();
+  const nextSites = sites.map(site => {
+    if (site.domain !== domain) return site;
+    const next = { ...site, type };
+    if (type === 'sub2api' && !next.pageUrl) {
+      next.pageUrl = `https://${domain}/check-in`;
+    }
+    if (type === 'zenapi' && !next.pageUrl) {
+      next.pageUrl = `https://${domain}/user`;
+    }
+    return next;
+  });
+  await saveSitesConfig(nextSites);
+}
+
 // 单个站点签到
 async function checkInSite(site) {
+  if (site.type === 'sub2api') {
+    return checkInSub2ApiSite(site);
+  }
+  if (site.type === 'zenapi') {
+    return checkInZenApiSite(site);
+  }
+
   // 1. 优先使用缓存的认证头
   let authHeaders = await getCachedHeaders(site.siteId);
   let tabToCleanup = null;
@@ -190,7 +298,7 @@ async function checkInSite(site) {
   } else {
     // 没有缓存，先尝试自动 OAuth 登录
     console.log(`${site.siteName} 无缓存认证头，尝试自动 OAuth 登录...`);
-    const oauthResult = await autoOAuthLogin(site.cookieDomain);
+    const oauthResult = await autoOAuthLogin(site.cookieDomain, site.visitUrl);
 
     if (oauthResult) {
       authHeaders = oauthResult.headers;
@@ -214,8 +322,20 @@ async function checkInSite(site) {
   }
 
   // 2. 执行签到
-  const execResult = await doCheckInRequest(site.signExecUrl, site.signExecMethod, site.signExecParams, authHeaders);
+  let execResult = await doCheckInRequest(site.signExecUrl, site.signExecMethod, site.signExecParams, authHeaders);
   console.log(`${site.siteName} 签到响应:`, execResult);
+
+  if (execResult.requiresPageExecution) {
+    console.log(`${site.siteName} 要求在官方页面内签到，切换到页面上下文重试...`);
+    const pageResult = await checkInNewApiFromOfficialPage(site);
+    if (pageResult.tabId && !tabToCleanup) tabToCleanup = pageResult.tabId;
+    execResult = pageResult.result;
+    console.log(`${site.siteName} 页面上下文签到响应:`, execResult);
+
+    if (pageResult.keepTabOpen) {
+      tabToCleanup = null;
+    }
+  }
 
   // 3. 检测 Cloudflare 错误（cf_clearance 过期或被拦截）
   const isCloudflareError =
@@ -226,7 +346,7 @@ async function checkInSite(site) {
     console.log(`${site.siteName} 检测到 Cloudflare 防护，清除缓存并重新登录...`);
     await clearCachedHeaders(site.siteId);
 
-    const oauthResult = await autoOAuthLogin(site.cookieDomain);
+    const oauthResult = await autoOAuthLogin(site.cookieDomain, site.visitUrl);
     if (oauthResult) {
       // 标记该站点需要在标签页中执行（绕过 Cloudflare）
       oauthResult.headers._needsTabExecution = true;
@@ -264,7 +384,7 @@ async function checkInSite(site) {
     console.log(`${site.siteName} 认证过期，尝试 OAuth 重新登录...`);
     await clearCachedHeaders(site.siteId);
 
-    const oauthResult = await autoOAuthLogin(site.cookieDomain);
+    const oauthResult = await autoOAuthLogin(site.cookieDomain, site.visitUrl);
     if (oauthResult) {
       await cacheHeaders(site.siteId, oauthResult.headers);
       const retryResult = await doCheckInRequest(site.signExecUrl, site.signExecMethod, site.signExecParams, oauthResult.headers);
@@ -313,6 +433,423 @@ async function checkInSite(site) {
   const result = formatResult(execResult);
   result.queryVerified = queryVerified;
   return result;
+}
+
+async function checkInSub2ApiSite(site) {
+  let authHeaders = await getCachedHeaders(site.siteId);
+  let tabToCleanup = null;
+
+  if (!hasAuthorizationHeader(authHeaders)) {
+    const tab = await getOrCreateTab(site.cookieDomain, site.visitUrl);
+    authHeaders = await readSub2ApiAuthHeadersFromTab(tab.id, authHeaders);
+
+    if (!hasAuthorizationHeader(authHeaders)) {
+      const capturedHeaders = await captureAuthHeaders(site.cookieDomain, tab.id);
+      authHeaders = await readSub2ApiAuthHeadersFromTab(tab.id, capturedHeaders || authHeaders);
+    }
+
+    if (!hasAuthorizationHeader(authHeaders)) {
+      if (tab._autoCreated) try { await chrome.tabs.remove(tab.id); } catch (e) {}
+      throw new Error('无法读取 Sub2API 登录令牌，请先在浏览器中登录该站点');
+    }
+
+    await cacheHeaders(site.siteId, authHeaders);
+    if (tab._autoCreated) tabToCleanup = tab.id;
+  }
+
+  const sub2ApiHeaders = { ...authHeaders, _needsTabExecution: true, _successOnHttpOk: true };
+  let execResult = await doCheckInRequest(site.signExecUrl, site.signExecMethod, site.signExecParams, sub2ApiHeaders);
+  console.log(`${site.siteName} Sub2API 签到响应:`, execResult);
+
+  if (execResult.httpStatus === 401 || execResult.httpStatus === 403) {
+    await clearCachedHeaders(site.siteId);
+    const tab = await getOrCreateTab(site.cookieDomain, site.visitUrl);
+    authHeaders = await readSub2ApiAuthHeadersFromTab(tab.id, null);
+
+    if (hasAuthorizationHeader(authHeaders)) {
+      const retryHeaders = { ...authHeaders, _needsTabExecution: true, _successOnHttpOk: true };
+      await cacheHeaders(site.siteId, authHeaders);
+      execResult = await doCheckInRequest(site.signExecUrl, site.signExecMethod, site.signExecParams, retryHeaders);
+      console.log(`${site.siteName} Sub2API 重新读取令牌后签到响应:`, execResult);
+      if (tab._autoCreated) tabToCleanup = tab.id;
+    }
+  }
+
+  if (execResult.httpStatus === 401 || execResult.httpStatus === 403) {
+    if (tabToCleanup) try { await chrome.tabs.remove(tabToCleanup); } catch (e) {}
+    throw new Error('Sub2API 登录已失效，请先重新登录该站点');
+  }
+
+  if (tabToCleanup) try { await chrome.tabs.remove(tabToCleanup); } catch (e) {}
+
+  const result = formatResult(execResult);
+  result.queryVerified = execResult.success || execResult.alreadyCheckedIn || false;
+  return result;
+}
+
+async function checkInZenApiSite(site) {
+  let authHeaders = await getCachedHeaders(site.siteId);
+  let tabToCleanup = null;
+
+  if (!hasAuthorizationHeader(authHeaders)) {
+    const tab = await getOrCreateTab(site.cookieDomain, site.visitUrl);
+    authHeaders = await readStorageTokenAuthHeadersFromTab(tab.id, ['user_token'], authHeaders);
+
+    if (!hasAuthorizationHeader(authHeaders)) {
+      const oauthResult = await autoZenApiOAuthLogin(site.cookieDomain, tab.id);
+      authHeaders = oauthResult?.headers || authHeaders;
+      if (oauthResult?.tabId && tab._autoCreated) tabToCleanup = oauthResult.tabId;
+    }
+
+    if (!hasAuthorizationHeader(authHeaders)) {
+      if (tab._autoCreated) try { await chrome.tabs.remove(tab.id); } catch (e) {}
+      throw new Error('ZenAPI 登录失败，请确认浏览器已登录 linux.do 后重试');
+    }
+
+    await cacheHeaders(site.siteId, authHeaders);
+    if (tab._autoCreated) tabToCleanup = tab.id;
+  }
+
+  const zenApiHeaders = { ...authHeaders, _needsTabExecution: true };
+  let execResult = await doCheckInRequest(site.signExecUrl, site.signExecMethod, site.signExecParams, zenApiHeaders);
+  console.log(`${site.siteName} ZenAPI 签到响应:`, execResult);
+
+  if (execResult.httpStatus === 401 || execResult.httpStatus === 403) {
+    await clearCachedHeaders(site.siteId);
+    const tab = await getOrCreateTab(site.cookieDomain, site.visitUrl);
+    authHeaders = await readStorageTokenAuthHeadersFromTab(tab.id, ['user_token'], null);
+
+    if (!hasAuthorizationHeader(authHeaders)) {
+      const oauthResult = await autoZenApiOAuthLogin(site.cookieDomain, tab.id);
+      authHeaders = oauthResult?.headers || authHeaders;
+    }
+
+    if (hasAuthorizationHeader(authHeaders)) {
+      const retryHeaders = { ...authHeaders, _needsTabExecution: true };
+      await cacheHeaders(site.siteId, authHeaders);
+      execResult = await doCheckInRequest(site.signExecUrl, site.signExecMethod, site.signExecParams, retryHeaders);
+      console.log(`${site.siteName} ZenAPI 重新读取令牌后签到响应:`, execResult);
+      if (tab._autoCreated) tabToCleanup = tab.id;
+    }
+  }
+
+  if (execResult.httpStatus === 401 || execResult.httpStatus === 403) {
+    if (tabToCleanup) try { await chrome.tabs.remove(tabToCleanup); } catch (e) {}
+    throw new Error('ZenAPI 登录已失效，请先重新登录该站点');
+  }
+
+  if (tabToCleanup) try { await chrome.tabs.remove(tabToCleanup); } catch (e) {}
+
+  const result = formatResult(execResult);
+  result.queryVerified = execResult.success || execResult.alreadyCheckedIn || false;
+  return result;
+}
+
+async function checkInNewApiFromOfficialPage(site) {
+  const tab = await getOrCreateTab(site.cookieDomain, site.visitUrl);
+  await chrome.tabs.update(tab.id, { url: site.visitUrl, active: true });
+  await waitForTabComplete(tab.id, 20000);
+  await sleep(3000);
+
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    func: async () => {
+      const originalFetch = window.fetch;
+      const originalXhrOpen = window.XMLHttpRequest?.prototype?.open;
+      const originalXhrSend = window.XMLHttpRequest?.prototype?.send;
+      const checkInResponses = [];
+
+      function recordCheckInResponse(url, method, status, text) {
+        try {
+          if (!url || !String(url).includes('/api/user/checkin') || String(method || 'GET').toUpperCase() !== 'POST') {
+            return;
+          }
+          let data = null;
+          try { data = JSON.parse(text); } catch (e) {}
+          checkInResponses.push({ httpStatus: status, data, text });
+        } catch (e) {}
+      }
+
+      window.fetch = async (...args) => {
+        const response = await originalFetch.apply(window, args);
+        try {
+          const request = args[0];
+          const options = args[1] || {};
+          const url = typeof request === 'string' ? request : request?.url;
+          const method = String(options.method || request?.method || 'GET').toUpperCase();
+          if (url && url.includes('/api/user/checkin') && method === 'POST') {
+            const clone = response.clone();
+            const text = await clone.text();
+            recordCheckInResponse(url, method, response.status, text);
+          }
+        } catch (e) {}
+        return response;
+      };
+
+      if (originalXhrOpen && originalXhrSend) {
+        window.XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+          this.__newApiCheckInRequest = { method, url: String(url || '') };
+          return originalXhrOpen.call(this, method, url, ...rest);
+        };
+        window.XMLHttpRequest.prototype.send = function(...args) {
+          try {
+            this.addEventListener('load', () => {
+              const req = this.__newApiCheckInRequest || {};
+              recordCheckInResponse(req.url, req.method, this.status, this.responseText || '');
+            }, { once: true });
+          } catch (e) {}
+          return originalXhrSend.apply(this, args);
+        };
+      }
+
+      function isVisible(el) {
+        const style = window.getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        return style.visibility !== 'hidden' &&
+          style.display !== 'none' &&
+          rect.width > 0 &&
+          rect.height > 0;
+      }
+
+      function hasSecurityCheck() {
+        const text = document.body?.innerText || '';
+        return /Security Check|安全验证|人机验证|Turnstile/i.test(text) ||
+          Boolean(document.querySelector('iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"]'));
+      }
+
+      function hasCheckedInText() {
+        const text = document.body?.innerText || '';
+        return /Checked in|已签到|今日已签到/i.test(text);
+      }
+
+      function findCheckInButton() {
+        const candidates = Array.from(document.querySelectorAll('button, [role="button"]'));
+        return candidates.find((el) => {
+          const text = (el.textContent || '').trim();
+          const disabled = el.disabled || el.getAttribute('aria-disabled') === 'true';
+          return !disabled &&
+            isVisible(el) &&
+            /Check in now|立即签到|现在签到|^签到$/i.test(text) &&
+            !/Checked in|已签到/i.test(text);
+        });
+      }
+
+      try {
+        if (hasCheckedInText()) {
+          return { kind: 'already', message: '今日已签到' };
+        }
+
+        const button = findCheckInButton();
+        if (!button) {
+          return {
+            kind: hasSecurityCheck() ? 'security-check' : 'no-button',
+            message: hasSecurityCheck()
+              ? '需要在打开的网页完成 Turnstile 安全验证后重试'
+              : '未找到官方页面签到按钮，请在打开的网页手动点击签到'
+          };
+        }
+
+        button.click();
+
+        for (let i = 0; i < 40; i++) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+          if (checkInResponses.length > 0) {
+            return { kind: 'response', ...checkInResponses[checkInResponses.length - 1] };
+          }
+          if (hasSecurityCheck()) {
+            return {
+              kind: 'security-check',
+              message: '需要在打开的网页完成 Turnstile 安全验证后重试'
+            };
+          }
+          if (hasCheckedInText()) {
+            return { kind: 'already', message: '今日已签到' };
+          }
+        }
+
+        return {
+          kind: 'timeout',
+          message: '官方页面签到请求超时，请在打开的网页查看是否需要手动操作'
+        };
+      } finally {
+        window.fetch = originalFetch;
+        if (originalXhrOpen && originalXhrSend) {
+          window.XMLHttpRequest.prototype.open = originalXhrOpen;
+          window.XMLHttpRequest.prototype.send = originalXhrSend;
+        }
+      }
+    }
+  });
+
+  const pageResult = results[0]?.result || {};
+  console.log(`${site.siteName} 官方页面签到执行结果:`, pageResult);
+
+  if (pageResult.kind === 'response' && pageResult.data) {
+    const parsed = parseCheckInResponse(pageResult.data, pageResult.httpStatus, false);
+    if (parsed.requiresPageExecution) {
+      parsed.message = '站点仍要求在官方网页手动点击签到，已打开页面，请在页面中手动完成';
+      return { result: parsed, tabId: tab.id, keepTabOpen: true };
+    }
+    if (parsed.requiresSecurityCheck) {
+      parsed.message = '需要在打开的网页完成 Turnstile 安全验证后重试';
+      return { result: parsed, tabId: tab.id, keepTabOpen: true };
+    }
+    return { result: parsed, tabId: tab.id, keepTabOpen: false };
+  }
+
+  if (pageResult.kind === 'already') {
+    return {
+      result: {
+        success: true,
+        alreadyCheckedIn: true,
+        message: pageResult.message || '今日已签到',
+        httpStatus: 200,
+        data: pageResult
+      },
+      tabId: tab.id,
+      keepTabOpen: false
+    };
+  }
+
+  return {
+    result: {
+      success: false,
+      message: pageResult.message || '官方页面签到失败，请在打开的网页手动完成',
+      httpStatus: pageResult.kind === 'security-check' ? 403 : 0,
+      data: pageResult
+    },
+    tabId: tab.id,
+    keepTabOpen: true
+  };
+}
+
+async function autoZenApiOAuthLogin(domain, tabId = null) {
+  console.log(`[ZenAPI OAuth] 开始登录: ${domain}`);
+
+  const ldCookies = await chrome.cookies.getAll({ domain: 'linux.do' });
+  if (ldCookies.length === 0) {
+    console.warn('[ZenAPI OAuth] linux.do 未登录');
+    return null;
+  }
+
+  let tab;
+  try {
+    tab = tabId ? await chrome.tabs.get(tabId) : await getOrCreateTab(domain, `https://${domain}/login`);
+    await chrome.tabs.update(tab.id, { url: buildZenApiLoginUrl(domain) });
+    await waitForTabComplete(tab.id, 20000);
+    await sleep(1000);
+
+    let tabInfo = await chrome.tabs.get(tab.id);
+    console.log(`[ZenAPI OAuth] 当前页面: ${tabInfo.url}`);
+
+    if (tabInfo.url && tabInfo.url.includes('connect.linux.do')) {
+      await clickLinuxDoAuthorizeButton(tab.id);
+      const redirected = await waitForTabUrlMatch(tab.id, domain, 30000);
+      if (!redirected) {
+        console.warn('[ZenAPI OAuth] 等待回跳 ZenAPI 超时');
+        return null;
+      }
+      await waitForTabComplete(tab.id, 20000);
+      await sleep(1000);
+      tabInfo = await chrome.tabs.get(tab.id);
+    }
+
+    const callbackToken = extractZenApiLinuxDoToken(tabInfo.url || '');
+    if (callbackToken) {
+      console.log('[ZenAPI OAuth] 从回调 URL 读取到 linuxdo_token');
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: (token) => {
+          localStorage.setItem('user_token', token);
+          history.replaceState(null, '', '/user');
+        },
+        args: [callbackToken]
+      });
+    }
+
+    await sleep(1000);
+    const headers = await readStorageTokenAuthHeadersFromTab(tab.id, ['user_token'], null, 'ZenAPI');
+    if (!hasAuthorizationHeader(headers) && callbackToken) {
+      const fallbackHeaders = mergeZenApiTokenHeader({}, callbackToken);
+      fallbackHeaders._tabId = tab.id;
+      return { headers: fallbackHeaders, tabId: tab.id };
+    }
+
+    if (!hasAuthorizationHeader(headers)) {
+      console.warn('[ZenAPI OAuth] 未能读取 user_token');
+      return null;
+    }
+
+    return { headers, tabId: tab.id };
+  } catch (e) {
+    console.warn('[ZenAPI OAuth] 登录失败:', e);
+    return null;
+  }
+}
+
+async function clickLinuxDoAuthorizeButton(tabId) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        const selectors = [
+          'button',
+          'input[type="submit"]',
+          'a[class*="btn"]',
+          '[role="button"]'
+        ];
+        const candidates = document.querySelectorAll(selectors.join(','));
+        for (const el of candidates) {
+          const text = (el.textContent || el.value || '').trim();
+          if (/allow|允许|授权|approve|accept|Authorize|同意/i.test(text)) {
+            el.click();
+            return `clicked: ${text}`;
+          }
+        }
+
+        const form = document.querySelector('form');
+        const submit = form?.querySelector('button, input[type="submit"]');
+        if (submit) {
+          submit.click();
+          return 'clicked form submit';
+        }
+
+        return 'no authorize button found';
+      }
+    });
+    console.log('[ZenAPI OAuth] 授权页点击结果:', results[0]?.result);
+  } catch (e) {
+    console.warn('[ZenAPI OAuth] 点击授权按钮失败:', e);
+  }
+}
+
+async function readSub2ApiAuthHeadersFromTab(tabId, baseHeaders = {}) {
+  return readStorageTokenAuthHeadersFromTab(tabId, ['auth_token', 'access_token', 'token'], baseHeaders, 'Sub2API');
+}
+
+async function readStorageTokenAuthHeadersFromTab(tabId, tokenKeys, baseHeaders = {}, logLabel = 'Auth') {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (keys) => {
+        const tokenKeys = Array.isArray(keys) ? keys : [];
+        for (const key of tokenKeys) {
+          const token = localStorage.getItem(key) || sessionStorage.getItem(key);
+          if (token) return token;
+        }
+        return null;
+      },
+      args: [tokenKeys]
+    });
+
+    const token = results[0]?.result;
+    const headers = mergeAuthorizationHeader(baseHeaders || {}, token);
+    headers._tabId = tabId;
+    return headers;
+  } catch (e) {
+    console.warn(`[${logLabel}] 读取页面登录令牌失败:`, e);
+    return baseHeaders || {};
+  }
 }
 
 function formatResult(execResult) {
@@ -420,7 +957,7 @@ async function doCheckInRequest(url, method, params, capturedHeaders) {
     const authKeys = ['authorization', 'cookie', 'session', 'token', 'x-token', 'x-auth', 'new-api'];
 
     for (const [name, value] of Object.entries(capturedHeaders)) {
-      if (name === '_tabId') continue; // 跳过临时标记
+      if (name.startsWith('_')) continue; // 跳过临时标记
       const lower = name.toLowerCase();
       if (authKeys.some(k => lower.includes(k))) {
         headers[name] = value;
@@ -430,7 +967,7 @@ async function doCheckInRequest(url, method, params, capturedHeaders) {
     try {
       const results = await chrome.scripting.executeScript({
         target: { tabId: tabId },
-        func: async (fetchUrl, fetchMethod, fetchParams, fetchHeaders) => {
+        func: async (fetchUrl, fetchMethod, fetchParams, fetchHeaders, successOnHttpOk) => {
           try {
             const options = {
               method: fetchMethod,
@@ -452,12 +989,26 @@ async function doCheckInRequest(url, method, params, capturedHeaders) {
               return { error: 'Response is not JSON: ' + text.substring(0, 100), httpStatus: response.status };
             }
 
-            const success = data.success === true || data.status === 'success' || data.ret === 1 || data.code === 0;
-            const message = data.message || data.msg || data.data || '签到完成';
+            const zenApiAlreadyCheckedIn = data?.already_checked_in === true;
+            const success =
+              data.success === true ||
+              data.status === 'success' ||
+              data.ret === 1 ||
+              data.code === 0 ||
+              data.ok === true ||
+              (successOnHttpOk === true && response.ok);
+            const reward = Number(data?.reward);
+            const message =
+              data.message ||
+              data.msg ||
+              (zenApiAlreadyCheckedIn ? '今日已签到' : null) ||
+              (Number.isFinite(reward) ? `签到成功，获得 $${reward.toFixed(2)}` : null) ||
+              data.data ||
+              '签到完成';
             const msgStr = typeof message === 'string' ? message : JSON.stringify(message);
 
             const alreadyKeywords = ['已签到', '已经签到', 'already', '重复签到'];
-            const alreadyCheckedIn = !success && alreadyKeywords.some(k => msgStr.includes(k));
+            const alreadyCheckedIn = zenApiAlreadyCheckedIn || (!success && alreadyKeywords.some(k => msgStr.includes(k)));
 
             return {
               success: success || alreadyCheckedIn,
@@ -470,7 +1021,7 @@ async function doCheckInRequest(url, method, params, capturedHeaders) {
             return { error: e.message, success: false, httpStatus: 0 };
           }
         },
-        args: [url, method, params, headers]
+        args: [url, method, params, headers, capturedHeaders._successOnHttpOk === true]
       });
 
       const result = results[0]?.result;
@@ -516,21 +1067,7 @@ async function doFetchWithHeaders(url, method, params, capturedHeaders) {
 
     console.log(`[fetch] 响应状态: ${response.status}, 数据:`, JSON.stringify(data).substring(0, 200));
 
-    const success = data.success === true || data.status === 'success' || data.ret === 1 || data.code === 0;
-    const message = data.message || data.msg || data.data || '签到完成';
-    const msgStr = typeof message === 'string' ? message : JSON.stringify(message);
-
-    // "今日已签到" 视为已完成（不是失败）
-    const alreadyKeywords = ['已签到', '已经签到', 'already', '重复签到'];
-    const alreadyCheckedIn = !success && alreadyKeywords.some(k => msgStr.includes(k));
-
-    return {
-      success: success || alreadyCheckedIn,
-      alreadyCheckedIn,
-      message: msgStr,
-      httpStatus: response.status,
-      data
-    };
+    return parseCheckInResponse(data, response.status, capturedHeaders._successOnHttpOk === true);
   } catch (e) {
     console.error(`[fetch] 请求失败:`, e);
     return { error: e.message, success: false, httpStatus: 0 };
@@ -610,7 +1147,7 @@ function waitForTabUrlMatch(tabId, domain, timeout = 20000) {
 }
 
 // 自动通过 linux.do OAuth 登录目标站点
-async function autoOAuthLogin(domain) {
+async function autoOAuthLogin(domain, visitUrl) {
   console.log(`[OAuth] 开始自动登录: ${domain}`);
 
   // 1. 获取 linuxdo_client_id（在标签页上下文中执行以绕过 Cloudflare）
@@ -825,11 +1362,36 @@ async function autoOAuthLogin(domain) {
           target: { tabId: tab.id },
           func: async () => {
             try {
-              // 检查 localStorage 中是否有 user 键（表示已登录）
+              // 检查 localStorage 中是否有 user 键（旧版 New API 会写入 user）
               const hasUser = localStorage.getItem('user') !== null;
-              const resp = await fetch('/api/status');
-              const data = await resp.json();
-              return { success: true, hasUser: hasUser, data: data };
+              let statusData = null;
+              let selfData = null;
+              let selfStatus = 0;
+              let userAuthenticated = false;
+
+              try {
+                const statusResp = await fetch('/api/status', { credentials: 'include' });
+                statusData = await statusResp.json();
+              } catch (e) {}
+
+              try {
+                const selfResp = await fetch('/api/user/self', { credentials: 'include' });
+                selfStatus = selfResp.status;
+                selfData = await selfResp.json();
+                userAuthenticated = selfResp.ok &&
+                  selfStatus !== 401 &&
+                  selfData?.success !== false &&
+                  Boolean(selfData?.data || selfData?.success === true);
+              } catch (e) {}
+
+              return {
+                success: true,
+                hasUser: hasUser,
+                userAuthenticated: userAuthenticated,
+                data: statusData,
+                selfStatus: selfStatus,
+                selfData: selfData
+              };
             } catch (e) {
               return { success: false, error: e.message };
             }
@@ -837,15 +1399,14 @@ async function autoOAuthLogin(domain) {
         });
         const result = results[0]?.result;
         console.log(`[OAuth] 页面上下文检查结果:`, JSON.stringify(result).substring(0, 300));
-        console.log(`[OAuth] localStorage 有 user 键: ${result?.hasUser}`);
+        console.log(`[OAuth] localStorage 有 user 键: ${result?.hasUser}, /api/user/self 已认证: ${result?.userAuthenticated}`);
 
-        // 必须同时满足: API 返回成功 且 localStorage 有 user 键
-        if (result?.success && result?.data?.success && result?.hasUser) {
+        if (result?.success && hasNewApiUserSession(result)) {
           sessionEstablished = true;
           console.log('[OAuth] session 已建立且用户已登录');
           break;
-        } else if (result?.success && !result?.hasUser) {
-          console.log('[OAuth] API 返回成功但 localStorage 无 user 键，继续等待...');
+        } else if (result?.success) {
+          console.log('[OAuth] 尚未检测到已登录用户 session，继续等待...');
         }
       } catch (e) {
         console.warn(`[OAuth] 验证失败:`, e.message);
@@ -864,9 +1425,10 @@ async function autoOAuthLogin(domain) {
     await waitForTabComplete(tab.id, 15000);
     await sleep(2000);
 
-    // 8. 导航到登录页以捕获认证头（session 已在 OAuth 回调页面建立）
-    console.log('[OAuth] 导航到登录页以捕获认证头...');
-    await chrome.tabs.update(tab.id, { url: `https://${domain}/login` });
+    // 8. 导航到用户配置页以捕获认证头（session 已在 OAuth 回调页面建立）
+    const postLoginUrl = getNewApiPostLoginUrl(domain, visitUrl);
+    console.log(`[OAuth] 导航到用户页以捕获认证头: ${postLoginUrl}`);
+    await chrome.tabs.update(tab.id, { url: postLoginUrl });
     await waitForTabComplete(tab.id, 15000);
     await sleep(2000);
 
@@ -952,7 +1514,7 @@ async function autoOAuthLogin(domain) {
 }
 
 // 获取或创建标签页
-async function getOrCreateTab(domain) {
+async function getOrCreateTab(domain, url = `https://${domain}/`) {
   const tabs = await chrome.tabs.query({ url: `https://${domain}/*` });
   if (tabs.length > 0) {
     return tabs[0];
@@ -960,7 +1522,7 @@ async function getOrCreateTab(domain) {
 
   console.log(`未找到 ${domain} 的标签页，后台打开...`);
   const tab = await chrome.tabs.create({
-    url: `https://${domain}/`,
+    url,
     active: false
   });
 
