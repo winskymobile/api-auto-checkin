@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>多网站自动签到助手</title>
+  <title>公益站自动签到助手</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -266,6 +266,19 @@
     .site-status.invalid { background: var(--danger-bg); color: var(--danger-text); }
     .site-status.checking { background: var(--warning-bg); color: var(--warning-text); }
     .site-status.pending { background: var(--warning-bg); color: var(--warning-text); }
+    .site-balance {
+      padding: 3px 8px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: bold;
+      flex-shrink: 0;
+      background: var(--neutral-bg);
+      color: var(--primary);
+      max-width: 82px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     .site-mode {
       padding: 3px 8px;
       border-radius: 10px;
@@ -427,8 +440,8 @@
 <body>
   <div class="container">
     <div class="header">
-      <h1>多网站自动签到</h1>
-      <p>多类型站点自动签到 | 每天 <span id="autoSignTimeLabel">09:00</span></p>
+      <h1>公益站自动签到</h1>
+      <p>支持NewAPI、Sub2API等多类型站点 | 每天 <span id="autoSignTimeLabel">09:00</span></p>
     </div>
 
     <div class="card">
@@ -457,11 +470,11 @@
 
       <div class="sites-list" id="sitesList"></div>
 
-      <button class="btn btn-sm btn-add" id="showAddBtn">+ 添加站点</button>
+      <button class="btn btn-sm btn-add" id="showAddBtn">+ 添加站点签到页</button>
 
       <div class="add-form" id="addForm">
         <div class="site-input-row">
-          <input type="text" id="newDomain" placeholder="输入域名或签到页链接，如 example.com">
+          <input type="text" id="newDomain" placeholder="签到页链接，如 c.com/console/personal">
           <label class="visit-only" for="visitOnly">
             <input type="checkbox" id="visitOnly">
             <span>仅访问</span>
@@ -498,6 +511,7 @@
   <script src="site-url.js"></script>
   <script src="config.js"></script>
   <script src="checkin-run-state.js"></script>
+  <script src="render-guard.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

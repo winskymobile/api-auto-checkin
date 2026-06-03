@@ -46,6 +46,19 @@
     };
   }
 
+  function clearResultBalances(results = {}) {
+    const next = {};
+    for (const [siteId, result] of Object.entries(results || {})) {
+      if (!result || typeof result !== 'object') {
+        next[siteId] = result;
+        continue;
+      }
+      const { balance, ...rest } = result;
+      next[siteId] = rest;
+    }
+    return next;
+  }
+
   function normalizeCheckInResultsForRun(results = {}) {
     const normalized = {};
     for (const [siteId, result] of Object.entries(results)) {
@@ -63,6 +76,7 @@
   root.countEnabledSites = countEnabledSites;
   root.canStartCheckIn = canStartCheckIn;
   root.markSiteChecking = markSiteChecking;
+  root.clearResultBalances = clearResultBalances;
   root.normalizeCheckInResultsForRun = normalizeCheckInResultsForRun;
 
   if (typeof module !== 'undefined' && module.exports) {
@@ -74,6 +88,7 @@
       countEnabledSites,
       canStartCheckIn,
       markSiteChecking,
+      clearResultBalances,
       normalizeCheckInResultsForRun
     };
   }

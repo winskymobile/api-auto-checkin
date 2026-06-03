@@ -1,12 +1,12 @@
 // 导入配置
-importScripts('schedule.js', 'config.js', 'auth-headers.js', 'checkin-result.js', 'newapi-auth.js', 'zenapi-auth.js', 'tab-options.js', 'site-name.js', 'page-status.js', 'checkin-run-state.js');
+importScripts('schedule.js', 'config.js', 'auth-headers.js', 'checkin-result.js', 'newapi-auth.js', 'zenapi-auth.js', 'tab-options.js', 'site-name.js', 'page-status.js', 'checkin-run-state.js', 'balance.js');
 
 const DAILY_CHECK_IN_ALARM = 'dailyCheckIn';
 let currentCheckInPromise = null;
 
 // 安装时初始化
 chrome.runtime.onInstalled.addListener(() => {
-  console.log('多网站自动签到助手已安装');
+  console.log('公益站自动签到助手已安装');
 
   scheduleDailyCheckIn();
 
@@ -103,7 +103,7 @@ async function executeAllCheckIns({ source = 'manual' } = {}) {
   const { checkInResults: previousResults = {} } = await chrome.storage.local.get('checkInResults');
   await chrome.storage.local.set({
     checkInRunState: startedRunState,
-    checkInResults: normalizeCheckInResultsForRun(previousResults)
+    checkInResults: clearResultBalances(normalizeCheckInResultsForRun(previousResults))
   });
 
   // 设置初始badge
@@ -248,7 +248,7 @@ async function visitSite(site) {
         url: location.href,
         title: document.title,
         readyState: document.readyState,
-        bodyLength: document.body?.innerText?.length || 0
+        bodyText: document.body?.innerText || ''
       })
     });
 
@@ -262,7 +262,10 @@ async function visitSite(site) {
       return { status: 'failed', message: '页面未完成加载' };
     }
 
-    return { status: 'success', message: '已访问' };
+    const balance = extractBalanceFromText(page.bodyText);
+    const result = { status: 'success', message: '已访问' };
+    if (balance) result.balance = balance;
+    return result;
   } finally {
     if (tab?.id) {
       try { await chrome.tabs.remove(tab.id); } catch (e) {}
@@ -424,9 +427,10 @@ async function checkInSite(site) {
       console.log(`${site.siteName} 刷新认证后重试签到响应:`, retryResult);
 
       const fallback = await tryOfficialPageFallback(site, retryResult, refreshedAuth.tabToCleanup);
+      const result = await buildResultWithLatestBalance(site, fallback.execResult, refreshedAuth.headers, fallback.tabToCleanup);
       if (fallback.tabToCleanup) try { await chrome.tabs.remove(fallback.tabToCleanup); } catch (e) {}
       if (tabToCleanup && tabToCleanup !== fallback.tabToCleanup) try { await chrome.tabs.remove(tabToCleanup); } catch (e) {}
-      return formatResult(fallback.execResult);
+      return result;
     }
     if (tabToCleanup) try { await chrome.tabs.remove(tabToCleanup); } catch (e) {}
     throw new Error('Cloudflare 验证失败，重新登录失败');
@@ -444,9 +448,10 @@ async function checkInSite(site) {
       console.log(`${site.siteName} 刷新认证后重试签到响应:`, retryResult);
 
       const fallback = await tryOfficialPageFallback(site, retryResult, refreshedAuth.tabToCleanup);
+      const result = await buildResultWithLatestBalance(site, fallback.execResult, refreshedAuth.headers, fallback.tabToCleanup);
       if (fallback.tabToCleanup) try { await chrome.tabs.remove(fallback.tabToCleanup); } catch (e) {}
       if (tabToCleanup && tabToCleanup !== fallback.tabToCleanup) try { await chrome.tabs.remove(tabToCleanup); } catch (e) {}
-      return formatResult(fallback.execResult);
+      return result;
     }
     if (tabToCleanup) try { await chrome.tabs.remove(tabToCleanup); } catch (e) {}
     throw new Error('认证已过期，刷新浏览器登录态失败');
@@ -471,9 +476,8 @@ async function checkInSite(site) {
     }
   }
 
+  const result = await buildResultWithLatestBalance(site, execResult, authHeaders, tabToCleanup);
   if (tabToCleanup) try { await chrome.tabs.remove(tabToCleanup); } catch (e) {}
-
-  const result = formatResult(execResult);
   result.queryVerified = queryVerified;
   return result;
 }
@@ -501,6 +505,7 @@ async function checkInSub2ApiSite(site) {
   }
 
   const sub2ApiHeaders = { ...authHeaders, _needsTabExecution: true, _successOnHttpOk: true };
+  let activeHeaders = sub2ApiHeaders;
   let execResult = await doCheckInRequest(site.signExecUrl, site.signExecMethod, site.signExecParams, sub2ApiHeaders);
   console.log(`${site.siteName} Sub2API 签到响应:`, execResult);
 
@@ -511,6 +516,7 @@ async function checkInSub2ApiSite(site) {
 
     if (hasAuthorizationHeader(authHeaders)) {
       const retryHeaders = { ...authHeaders, _needsTabExecution: true, _successOnHttpOk: true };
+      activeHeaders = retryHeaders;
       await cacheHeaders(site.siteId, authHeaders);
       execResult = await doCheckInRequest(site.signExecUrl, site.signExecMethod, site.signExecParams, retryHeaders);
       console.log(`${site.siteName} Sub2API 重新读取令牌后签到响应:`, execResult);
@@ -523,9 +529,8 @@ async function checkInSub2ApiSite(site) {
 
   ({ execResult, tabToCleanup } = await tryOfficialPageFallback(site, execResult, tabToCleanup));
 
+  const result = await buildResultWithLatestBalance(site, execResult, activeHeaders, tabToCleanup);
   if (tabToCleanup) try { await chrome.tabs.remove(tabToCleanup); } catch (e) {}
-
-  const result = formatResult(execResult);
   result.queryVerified = execResult.success || execResult.alreadyCheckedIn || false;
   return result;
 }
@@ -554,6 +559,7 @@ async function checkInZenApiSite(site) {
   }
 
   const zenApiHeaders = { ...authHeaders, _needsTabExecution: true };
+  let activeHeaders = zenApiHeaders;
   let execResult = await doCheckInRequest(site.signExecUrl, site.signExecMethod, site.signExecParams, zenApiHeaders);
   console.log(`${site.siteName} ZenAPI 签到响应:`, execResult);
 
@@ -569,6 +575,7 @@ async function checkInZenApiSite(site) {
 
     if (hasAuthorizationHeader(authHeaders)) {
       const retryHeaders = { ...authHeaders, _needsTabExecution: true };
+      activeHeaders = retryHeaders;
       await cacheHeaders(site.siteId, authHeaders);
       execResult = await doCheckInRequest(site.signExecUrl, site.signExecMethod, site.signExecParams, retryHeaders);
       console.log(`${site.siteName} ZenAPI 重新读取令牌后签到响应:`, execResult);
@@ -581,9 +588,8 @@ async function checkInZenApiSite(site) {
 
   ({ execResult, tabToCleanup } = await tryOfficialPageFallback(site, execResult, tabToCleanup));
 
+  const result = await buildResultWithLatestBalance(site, execResult, activeHeaders, tabToCleanup);
   if (tabToCleanup) try { await chrome.tabs.remove(tabToCleanup); } catch (e) {}
-
-  const result = formatResult(execResult);
   result.queryVerified = execResult.success || execResult.alreadyCheckedIn || false;
   return result;
 }
@@ -784,42 +790,48 @@ async function checkInFromOfficialPage(site) {
   });
 
   const pageResult = results[0]?.result || {};
+  const fallbackPageBalance = await readBalanceFromTab(tab.id, site);
   console.log(`${site.siteName} 官方页面签到执行结果:`, pageResult);
+
+  function withFallbackPageBalance(result) {
+    if (fallbackPageBalance) result.balance = fallbackPageBalance;
+    return result;
+  }
 
   if (pageResult.kind === 'response' && pageResult.data) {
     const parsed = parseCheckInResponse(pageResult.data, pageResult.httpStatus, false);
     if (parsed.requiresPageExecution) {
       parsed.message = '站点仍要求页面内操作，自动签到已停止';
-      return { result: parsed, tabId: tab.id, keepTabOpen: shouldKeepOfficialPageFallbackTabOpen(parsed) };
+      return { result: withFallbackPageBalance(parsed), tabId: tab.id, keepTabOpen: shouldKeepOfficialPageFallbackTabOpen(parsed) };
     }
     if (parsed.requiresSecurityCheck) {
       parsed.message = '站点要求完成 Turnstile 安全验证，自动签到已停止';
-      return { result: parsed, tabId: tab.id, keepTabOpen: shouldKeepOfficialPageFallbackTabOpen(parsed) };
+      return { result: withFallbackPageBalance(parsed), tabId: tab.id, keepTabOpen: shouldKeepOfficialPageFallbackTabOpen(parsed) };
     }
-    return { result: parsed, tabId: tab.id, keepTabOpen: shouldKeepOfficialPageFallbackTabOpen(parsed) };
+    return { result: withFallbackPageBalance(parsed), tabId: tab.id, keepTabOpen: shouldKeepOfficialPageFallbackTabOpen(parsed) };
   }
 
   if (pageResult.kind === 'already') {
     return {
-      result: {
+      result: withFallbackPageBalance({
         success: true,
         alreadyCheckedIn: true,
         message: pageResult.message || '今日已签到',
         httpStatus: 200,
         data: pageResult
-      },
+      }),
       tabId: tab.id,
       keepTabOpen: false
     };
   }
 
   return {
-    result: {
+    result: withFallbackPageBalance({
       success: false,
       message: getOfficialPageFallbackFailureMessage(pageResult),
       httpStatus: pageResult.kind === 'security-check' ? 403 : 0,
       data: pageResult
-    },
+    }),
     tabId: tab.id,
     keepTabOpen: false
   };
@@ -972,6 +984,62 @@ function formatResult(execResult) {
     status: execResult.success ? 'success' : 'failed',
     message: execResult.message
   };
+}
+
+async function buildResultWithLatestBalance(site, execResult, authHeaders, tabId = null) {
+  const result = formatResult(execResult);
+  const balance = await fetchLatestBalance(site, authHeaders, tabId, execResult);
+  if (balance) result.balance = balance;
+  return result;
+}
+
+async function fetchLatestBalance(site, authHeaders, tabId = null, execResult = null) {
+  const fromResponse = extractBalanceFromCheckInResult(execResult);
+  if (fromResponse) return fromResponse;
+
+  const candidates = getBalanceQueryUrls(site);
+  for (const url of candidates) {
+    try {
+      const response = await doFetchWithHeaders(url, 'GET', null, authHeaders || {});
+      const fromData = extractBalanceFromData(response?.data);
+      if (fromData) return fromData;
+    } catch (e) {
+      console.warn(`${site.siteName} 余额接口读取失败 ${url}:`, e);
+    }
+  }
+
+  if (tabId) {
+    const fromPage = await readBalanceFromTab(tabId, site);
+    if (fromPage) return fromPage;
+  }
+
+  return null;
+}
+
+function getBalanceQueryUrls(site) {
+  const urls = [
+    site.signQueryUrl,
+    `https://${site.cookieDomain}/api/user/self`,
+    `https://${site.cookieDomain}/api/status`,
+    `https://${site.cookieDomain}/api/u/dashboard`,
+    `https://${site.cookieDomain}/api/v1/user/info`,
+    `https://${site.cookieDomain}/api/v1/user`
+  ];
+  return [...new Set(urls.filter(Boolean))];
+}
+
+async function readBalanceFromTab(tabId, site) {
+  try {
+    await chrome.tabs.get(tabId);
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => document.body?.innerText || ''
+    });
+    return extractBalanceFromText(results[0]?.result || '');
+  } catch (e) {
+    console.warn(`${site.siteName} 页面余额读取失败:`, e);
+    return null;
+  }
 }
 
 // 通过 webRequest 捕获页面真实请求头

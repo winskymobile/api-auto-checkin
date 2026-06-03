@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "多网站自动签到助手",
+  "name": "公益站自动签到助手",
   "version": "1.14",
-  "description": "支持 New API、Sub2API、ZenAPI 等站点的多网站自动签到工具",
+  "description": "支持NewAPI、Sub2API等多类型站点的公益站自动签到工具",
   "permissions": [
     "cookies",
     "storage",

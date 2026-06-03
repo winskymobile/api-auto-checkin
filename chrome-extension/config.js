@@ -12,6 +12,19 @@ function normalizeSiteType(type) {
   return ['auto', 'newapi', 'sub2api', 'zenapi'].includes(type) ? type : 'newapi';
 }
 
+function dedupeSitesByDomain(sites) {
+  if (!Array.isArray(sites)) return [];
+  const seen = new Set();
+  const deduped = [];
+  for (const site of sites) {
+    const domain = String(site?.domain || '').trim().toLowerCase();
+    if (!domain || seen.has(domain)) continue;
+    seen.add(domain);
+    deduped.push({ ...site, domain });
+  }
+  return deduped;
+}
+
 // 从域名生成完整站点配置（多类型站点通用）
 function buildSiteConfig(site) {
   const d = site.domain;
@@ -52,25 +65,27 @@ function buildSiteConfig(site) {
 // 从 storage 加载站点列表
 async function loadSitesConfig() {
   const data = await chrome.storage.local.get('userSites');
-  const sites = data.userSites || DEFAULT_SITES;
-  return sites.map(buildSiteConfig);
+  const sites = Array.isArray(data.userSites) ? data.userSites : [...DEFAULT_SITES];
+  return dedupeSitesByDomain(sites).map(buildSiteConfig);
 }
 
 // 保存站点列表到 storage
 async function saveSitesConfig(sites) {
-  await chrome.storage.local.set({ userSites: sites });
+  await chrome.storage.local.set({ userSites: dedupeSitesByDomain(sites) });
 }
 
 // 读取原始站点列表（简化格式）
 async function loadRawSites() {
   const data = await chrome.storage.local.get('userSites');
-  return data.userSites || DEFAULT_SITES;
+  const sites = Array.isArray(data.userSites) ? data.userSites : [...DEFAULT_SITES];
+  return dedupeSitesByDomain(sites);
 }
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     DEFAULT_SITES,
     buildSiteConfig,
+    dedupeSitesByDomain,
     normalizeSiteType
   };
 }

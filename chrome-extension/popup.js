@@ -1,4 +1,6 @@
 let currentRunState = { running: false };
+let addingSite = false;
+const sitesRenderGuard = createLatestRenderGuard();
 
 // 页面加载时初始化
 document.addEventListener('DOMContentLoaded', () => {
@@ -76,14 +78,10 @@ function handleStorageChange(changes, areaName) {
 
 // 渲染站点列表
 async function renderSites(results, { preserveScroll = false } = {}) {
+  const renderToken = sitesRenderGuard.begin();
   const scrollContainer = document.scrollingElement || document.documentElement;
   const scrollTop = preserveScroll ? scrollContainer.scrollTop : 0;
   const sites = await loadRawSites();
-  const sitesList = document.getElementById('sitesList');
-  sitesList.innerHTML = '';
-
-  document.getElementById('totalSites').textContent = sites.filter(s => s.enabled !== false).length;
-  updateCheckInButtonState(sites);
 
   // 如果没传 results，从 storage 读取上次结果
   if (!results) {
@@ -91,10 +89,21 @@ async function renderSites(results, { preserveScroll = false } = {}) {
     results = data.checkInResults || {};
   }
 
+  if (!sitesRenderGuard.isCurrent(renderToken)) return;
+
+  const sitesList = document.getElementById('sitesList');
+  document.getElementById('totalSites').textContent = sites.filter(s => s.enabled !== false).length;
+  updateCheckInButtonState(sites);
+
   if (sites.length === 0) {
-    sitesList.innerHTML = '<div class="empty-state">暂无站点，添加后即可开始签到</div>';
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.textContent = '暂无站点，添加后即可开始签到';
+    sitesList.replaceChildren(empty);
     return;
   }
+
+  const fragment = document.createDocumentFragment();
 
   sites.forEach((site, index) => {
     const siteId = site.domain.replace(/\./g, '_');
@@ -143,6 +152,13 @@ async function renderSites(results, { preserveScroll = false } = {}) {
       mode.textContent = '自动';
     }
 
+    const balance = document.createElement('span');
+    balance.className = 'site-balance';
+    if (result?.balance) {
+      balance.textContent = result.balance;
+      balance.title = `余额: ${result.balance}`;
+    }
+
     // 删除按钮
     const del = document.createElement('button');
     del.className = 'btn-del';
@@ -153,14 +169,19 @@ async function renderSites(results, { preserveScroll = false } = {}) {
     item.appendChild(toggle);
     item.appendChild(mode);
     item.appendChild(name);
+    if (result?.balance) item.appendChild(balance);
     item.appendChild(status);
     item.appendChild(del);
-    sitesList.appendChild(item);
+    fragment.appendChild(item);
   });
+
+  sitesList.replaceChildren(fragment);
 
   if (preserveScroll) {
     requestAnimationFrame(() => {
-      scrollContainer.scrollTop = scrollTop;
+      if (sitesRenderGuard.isCurrent(renderToken)) {
+        scrollContainer.scrollTop = scrollTop;
+      }
     });
   }
 }
@@ -183,27 +204,37 @@ function getStatusView(status) {
 
 // 添加站点
 async function handleAddSite() {
+  if (addingSite) return;
+  addingSite = true;
+  const confirmAddBtn = document.getElementById('confirmAddBtn');
+  confirmAddBtn.disabled = true;
+
   const input = document.getElementById('newDomain');
   const mode = getSelectedSiteMode();
-  const site = parseSiteInput(input.value, mode);
+  try {
+    const site = parseSiteInput(input.value, mode);
 
-  if (!site) {
-    alert('请输入有效的域名或签到页链接，如 example.com');
-    return;
+    if (!site) {
+      alert('请输入有效的签到页链接，如 c.com/console/personal');
+      return;
+    }
+
+    const sites = await loadRawSites();
+    if (sites.some(s => String(s.domain || '').toLowerCase() === site.domain)) {
+      alert('该站点已存在');
+      return;
+    }
+
+    sites.push(site);
+    await saveSitesConfig(sites);
+
+    resetAddForm();
+    document.getElementById('addForm').classList.remove('show');
+    renderSites();
+  } finally {
+    addingSite = false;
+    confirmAddBtn.disabled = false;
   }
-
-  const sites = await loadRawSites();
-  if (sites.some(s => s.domain === site.domain)) {
-    alert('该站点已存在');
-    return;
-  }
-
-  sites.push(site);
-  await saveSitesConfig(sites);
-
-  resetAddForm();
-  document.getElementById('addForm').classList.remove('show');
-  renderSites();
 }
 
 function getSelectedSiteMode() {
