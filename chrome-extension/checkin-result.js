@@ -25,8 +25,8 @@
       '签到完成';
     const msgStr = typeof rawMessage === 'string' ? rawMessage : JSON.stringify(rawMessage);
 
-    const alreadyKeywords = ['已签到', '已经签到', 'already', '重复签到'];
-    const alreadyCheckedIn = zenApiAlreadyCheckedIn || (!success && alreadyKeywords.some(k => msgStr.includes(k)));
+    const alreadyKeywords = ['已签到', '已经签到', '已签过', '今日已签', 'already', '重复签到'];
+    const alreadyCheckedIn = zenApiAlreadyCheckedIn || alreadyKeywords.some(k => msgStr.includes(k));
     const pageExecutionKeywords = ['自动化脚本异常请求', '官方网页手动点击签到'];
     const requiresPageExecution = !success && pageExecutionKeywords.some(k => msgStr.includes(k));
     const securityCheckKeywords = ['Turnstile', '安全验证', '人机验证'];
@@ -48,11 +48,17 @@
     return result;
   }
 
+  function shouldTryOfficialPageCheckIn(result) {
+    return Boolean(result && !result.success && !result.alreadyCheckedIn && !result.invalidSite);
+  }
+
   root.parseCheckInResponse = parseCheckInResponse;
+  root.shouldTryOfficialPageCheckIn = shouldTryOfficialPageCheckIn;
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
-      parseCheckInResponse
+      parseCheckInResponse,
+      shouldTryOfficialPageCheckIn
     };
   }
 })(typeof globalThis !== 'undefined' ? globalThis : this);

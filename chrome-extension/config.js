@@ -1,7 +1,5 @@
 // 默认站点配置（首次安装时写入 storage）
-const DEFAULT_SITES = [
-  { domain: 'test.com', name: 'test.com', enabled: true }
-];
+const DEFAULT_SITES = [];
 
 // 全局配置
 const GLOBAL_CONFIG = {
@@ -14,7 +12,7 @@ function normalizeSiteType(type) {
   return ['auto', 'newapi', 'sub2api', 'zenapi'].includes(type) ? type : 'newapi';
 }
 
-// 从域名生成完整站点配置（所有 New API 站点通用）
+// 从域名生成完整站点配置（多类型站点通用）
 function buildSiteConfig(site) {
   const d = site.domain;
   const mode = site.mode === 'visit' ? 'visit' : 'checkin';
@@ -71,6 +69,7 @@ async function loadRawSites() {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
+    DEFAULT_SITES,
     buildSiteConfig,
     normalizeSiteType
   };

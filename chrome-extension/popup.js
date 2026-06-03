@@ -1,8 +1,10 @@
+let currentRunState = { running: false };
+
 // 页面加载时初始化
 document.addEventListener('DOMContentLoaded', () => {
   loadStatus();
-  renderSites();
   setupEventListeners();
+  chrome.storage.onChanged.addListener(handleStorageChange);
 });
 
 function setupEventListeners() {
@@ -32,7 +34,12 @@ function setupEventListeners() {
 // 加载签到状态
 function loadStatus() {
   chrome.runtime.sendMessage({ action: 'getStatus' }, (response) => {
-    if (response) updateStats(response.checkInResults || {});
+    if (response) {
+      const results = response.checkInResults || {};
+      currentRunState = getCheckInRunState({ checkInRunState: response.checkInRunState });
+      updateStats(results);
+      renderSites(results);
+    }
     if (response?.lastCheckInTime) {
       document.getElementById('lastCheck').textContent =
         `上次签到: ${formatDateTime(new Date(response.lastCheckInTime))}`;
@@ -41,6 +48,30 @@ function loadStatus() {
       setAutoSignTimeDisplay(response.autoSignTime);
     }
   });
+}
+
+function handleStorageChange(changes, areaName) {
+  if (areaName !== 'local') return;
+
+  if (changes.checkInResults) {
+    const results = changes.checkInResults.newValue || {};
+    updateStats(results);
+    renderSites(results, { preserveScroll: true });
+  }
+
+  if (changes.checkInRunState) {
+    currentRunState = getCheckInRunState({ checkInRunState: changes.checkInRunState.newValue });
+    updateCheckInButtonState();
+  }
+
+  if (changes.userSites) {
+    renderSites(undefined, { preserveScroll: true });
+  }
+
+  if (changes.lastCheckInTime?.newValue) {
+    document.getElementById('lastCheck').textContent =
+      `上次签到: ${formatDateTime(new Date(changes.lastCheckInTime.newValue))}`;
+  }
 }
 
 // 渲染站点列表
@@ -52,6 +83,7 @@ async function renderSites(results, { preserveScroll = false } = {}) {
   sitesList.innerHTML = '';
 
   document.getElementById('totalSites').textContent = sites.filter(s => s.enabled !== false).length;
+  updateCheckInButtonState(sites);
 
   // 如果没传 results，从 storage 读取上次结果
   if (!results) {
@@ -93,16 +125,9 @@ async function renderSites(results, { preserveScroll = false } = {}) {
     const status = document.createElement('span');
     status.className = 'site-status';
     if (result) {
-      if (result.status === 'success') {
-        status.classList.add('success');
-        status.textContent = '成功';
-      } else if (result.status === 'already') {
-        status.classList.add('already');
-        status.textContent = '已签';
-      } else {
-        status.classList.add('failed');
-        status.textContent = '失败';
-      }
+      const view = getStatusView(result.status);
+      status.classList.add(view.className);
+      status.textContent = view.text;
     } else {
       status.classList.add('pending');
       status.textContent = enabled ? '待签' : '禁用';
@@ -115,11 +140,7 @@ async function renderSites(results, { preserveScroll = false } = {}) {
       mode.classList.add('visit');
       mode.textContent = '访问';
     } else {
-      const siteType = site.type || 'newapi';
-      if (siteType === 'sub2api') mode.classList.add('sub2api');
-      if (siteType === 'zenapi') mode.classList.add('zenapi');
-      if (siteType === 'auto') mode.classList.add('auto');
-      mode.textContent = getSiteTypeLabel(siteType);
+      mode.textContent = '自动';
     }
 
     // 删除按钮
@@ -149,7 +170,15 @@ function updateStats(results) {
   const vals = Object.values(results);
   document.getElementById('successCount').textContent = vals.filter(r => r.status === 'success').length;
   document.getElementById('alreadyCount').textContent = vals.filter(r => r.status === 'already').length;
-  document.getElementById('failedCount').textContent = vals.filter(r => r.status === 'failed').length;
+  document.getElementById('failedCount').textContent = vals.filter(r => r.status === 'failed' || r.status === 'invalid').length;
+}
+
+function getStatusView(status) {
+  if (status === 'success') return { className: 'success', text: '成功' };
+  if (status === 'already') return { className: 'already', text: '已签' };
+  if (status === 'checking') return { className: 'checking', text: '签到中' };
+  if (status === 'invalid') return { className: 'invalid', text: '失效' };
+  return { className: 'failed', text: '失败' };
 }
 
 // 添加站点
@@ -181,13 +210,6 @@ function getSelectedSiteMode() {
   return document.getElementById('visitOnly').checked ? 'visit' : 'checkin';
 }
 
-function getSiteTypeLabel(type) {
-  if (type === 'sub2api') return 'Sub2';
-  if (type === 'zenapi') return 'Zen';
-  if (type === 'auto') return '自动';
-  return 'New';
-}
-
 function resetAddForm() {
   document.getElementById('newDomain').value = '';
   document.getElementById('visitOnly').checked = false;
@@ -213,39 +235,60 @@ async function removeSite(index) {
   const site = sites[index];
   if (!site) return;
 
-  if (!confirm(`确定删除 ${site.domain}？`)) return;
+  if (!confirm(`确定删除 ${getSiteDisplayName(site)}？`)) return;
 
   sites.splice(index, 1);
   await saveSitesConfig(sites);
   renderSites();
 }
 
+function getSiteDisplayName(site) {
+  return site.name || site.domain;
+}
+
 // 手动签到
 async function handleManualCheckIn() {
-  const btn = document.getElementById('checkInBtn');
-  const btnText = document.getElementById('btnText');
+  const sites = await loadRawSites();
+  if (!canStartCheckIn(sites, currentRunState)) {
+    updateCheckInButtonState(sites);
+    return;
+  }
 
-  btn.disabled = true;
-  btnText.textContent = '签到中...';
+  currentRunState = buildCheckInRunningState({ total: countEnabledSites(sites), source: 'manual' });
+  updateCheckInButtonState(sites);
   showLoading();
 
   try {
     const response = await new Promise((resolve, reject) => {
       chrome.runtime.sendMessage({ action: 'manualCheckIn' }, (response) => {
-        if (response?.success) resolve(response.results);
+        if (response?.success) resolve(response);
         else reject(new Error(response?.error || '签到失败'));
       });
     });
 
-    updateStats(response);
-    renderSites(response);
-    document.getElementById('lastCheck').textContent = `上次签到: ${formatDateTime(new Date())}`;
+    updateStats(response.results || {});
+    renderSites(response.results || {});
+    if (!response.running) {
+      document.getElementById('lastCheck').textContent = `上次签到: ${formatDateTime(new Date())}`;
+    }
   } catch (error) {
     alert('签到失败: ' + error.message);
   } finally {
-    btn.disabled = false;
-    btnText.textContent = '立即签到';
+    const data = await chrome.storage.local.get('checkInRunState');
+    currentRunState = getCheckInRunState(data);
+    await updateCheckInButtonState();
   }
+}
+
+async function updateCheckInButtonState(sites) {
+  const currentSites = sites || await loadRawSites();
+  const running = isCheckInRunningState(currentRunState);
+  const enabledCount = countEnabledSites(currentSites);
+  const btn = document.getElementById('checkInBtn');
+  const btnText = document.getElementById('btnText');
+  btn.disabled = !canStartCheckIn(currentSites, currentRunState);
+  btnText.textContent = running ? '签到中...' : '立即签到';
+  btn.title = enabledCount > 0 ? '' : '请先添加并启用至少一个站点';
 }
 
 function showLoading() {
@@ -338,40 +381,39 @@ async function handleImport(event) {
       return;
     }
 
-    // 验证每个站点的格式
-    const validSites = config.sites.filter(site => {
-      return site.domain && typeof site.domain === 'string';
-    });
+    // 验证并兼容旧版站点格式
+    const validSites = normalizeImportSites(config.sites);
 
     if (validSites.length === 0) {
       alert('配置文件中没有有效的站点');
       return;
     }
 
-    // 询问是否覆盖
-    const currentSites = await loadRawSites();
-    let confirmMsg = `将导入 ${validSites.length} 个站点`;
-    if (currentSites.length > 0) {
-      confirmMsg += `\n当前有 ${currentSites.length} 个站点，是否覆盖？\n\n点击"确定"覆盖，点击"取消"合并`;
+    if (!confirm(`将导入 ${validSites.length} 个站点，是否继续？`)) {
+      return;
     }
 
-    const shouldReplace = confirm(confirmMsg);
+    const currentSites = await loadRawSites();
+    let importMode = 'replace';
+    if (currentSites.length > 0) {
+      importMode = confirm(
+        `当前有 ${currentSites.length} 个站点，是否覆盖？\n\n点击"确定"覆盖，点击"取消"合并`
+      ) ? 'replace' : 'merge';
+    }
 
-    let finalSites;
-    if (shouldReplace || currentSites.length === 0) {
-      // 覆盖模式
-      finalSites = validSites;
-    } else {
-      // 合并模式：去重
-      const existingDomains = new Set(currentSites.map(s => s.domain));
-      const newSites = validSites.filter(s => !existingDomains.has(s.domain));
-      finalSites = [...currentSites, ...newSites];
+    const importResult = buildImportSites(currentSites, validSites, importMode);
+    if (!importResult) {
+      return;
+    }
 
-      if (newSites.length === 0) {
+    let finalSites = importResult;
+    if (!Array.isArray(importResult)) {
+      finalSites = importResult.sites;
+      if (importResult.newCount === 0) {
         alert('所有站点都已存在，无需导入');
         return;
       }
-      alert(`成功导入 ${newSites.length} 个新站点`);
+      alert(`成功导入 ${importResult.newCount} 个新站点`);
     }
 
     await saveSitesConfig(finalSites);

@@ -1,7 +1,8 @@
 // 导入配置
-importScripts('schedule.js', 'config.js', 'auth-headers.js', 'checkin-result.js', 'newapi-auth.js', 'zenapi-auth.js');
+importScripts('schedule.js', 'config.js', 'auth-headers.js', 'checkin-result.js', 'newapi-auth.js', 'zenapi-auth.js', 'tab-options.js', 'site-name.js', 'page-status.js', 'checkin-run-state.js');
 
 const DAILY_CHECK_IN_ALARM = 'dailyCheckIn';
+let currentCheckInPromise = null;
 
 // 安装时初始化
 chrome.runtime.onInstalled.addListener(() => {
@@ -23,25 +24,37 @@ chrome.runtime.onStartup.addListener(() => {
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === DAILY_CHECK_IN_ALARM) {
     console.log('开始执行定时签到');
-    executeAllCheckIns();
+    startCheckInRun('schedule');
   }
 });
 
 // 监听来自 popup 的消息
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'manualCheckIn') {
-    executeAllCheckIns().then(results => {
-      sendResponse({ success: true, results });
-    }).catch(error => {
-      sendResponse({ success: false, error: error.message });
-    });
+    if (currentCheckInPromise) {
+      chrome.storage.local.get(['checkInResults', 'checkInRunState'], (data) => {
+        sendResponse({
+          success: true,
+          running: true,
+          results: data.checkInResults || {},
+          runState: getCheckInRunState(data)
+        });
+      });
+    } else {
+      startCheckInRun('manual').then(results => {
+        sendResponse({ success: true, running: false, results });
+      }).catch(error => {
+        sendResponse({ success: false, error: error.message });
+      });
+    }
     return true;
   }
 
   if (request.action === 'getStatus') {
-    chrome.storage.local.get(['lastCheckInTime', 'checkInResults', 'autoSignTime'], (data) => {
+    chrome.storage.local.get(['lastCheckInTime', 'checkInResults', 'checkInRunState', 'autoSignTime'], (data) => {
       sendResponse({
         ...data,
+        checkInRunState: getCheckInRunState(data),
         autoSignTime: isValidAutoSignTime(data.autoSignTime) ? data.autoSignTime : GLOBAL_CONFIG.autoSignTime
       });
     });
@@ -66,20 +79,38 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
+function startCheckInRun(source = 'manual') {
+  if (currentCheckInPromise) {
+    console.log('已有签到任务正在执行，跳过重复触发');
+    return currentCheckInPromise;
+  }
+
+  currentCheckInPromise = executeAllCheckIns({ source }).finally(() => {
+    currentCheckInPromise = null;
+  });
+  return currentCheckInPromise;
+}
+
 // 执行所有站点签到
-async function executeAllCheckIns() {
+async function executeAllCheckIns({ source = 'manual' } = {}) {
   console.log('开始批量签到');
   const results = {};
   const sites = await loadSitesConfig();
   const enabledSites = sites.filter(s => s.enabled);
   const total = enabledSites.length;
   let current = 0;
+  const startedRunState = buildCheckInRunningState({ total, source });
+  const { checkInResults: previousResults = {} } = await chrome.storage.local.get('checkInResults');
+  await chrome.storage.local.set({
+    checkInRunState: startedRunState,
+    checkInResults: normalizeCheckInResultsForRun(previousResults)
+  });
 
   // 设置初始badge
   chrome.action.setBadgeBackgroundColor({ color: '#667eea' });
   chrome.action.setBadgeText({ text: '0/' + total });
 
-  for (const site of sites) {
+  for (let site of sites) {
     if (!site.enabled) {
       console.log(`跳过禁用站点: ${site.siteName}`);
       continue;
@@ -88,33 +119,46 @@ async function executeAllCheckIns() {
     current++;
     // 更新badge进度
     chrome.action.setBadgeText({ text: `${current}/${total}` });
+    await chrome.storage.local.set({
+      checkInRunState: {
+        ...startedRunState,
+        current,
+        currentSiteId: site.siteId
+      },
+      checkInResults: markSiteChecking(results, site.siteId)
+    });
 
     try {
-      const resolvedSite = site.mode === 'visit' ? site : await resolveSiteType(site);
+      let resolvedSite = site.mode === 'visit' ? site : await resolveSiteType(site);
+      resolvedSite = await maybeUpdateSiteName(resolvedSite);
       console.log(`开始执行: ${resolvedSite.siteName} (${resolvedSite.mode}/${resolvedSite.type})`);
       const result = resolvedSite.mode === 'visit' ? await visitSite(resolvedSite) : await checkInSite(resolvedSite);
-      results[site.siteId] = result;
+      results[resolvedSite.siteId] = result;
       console.log(`${resolvedSite.siteName} 执行结果:`, result);
     } catch (error) {
       console.error(`${site.siteName} 执行失败:`, error);
-      results[site.siteId] = {
-        status: 'failed',
-        message: error.message
-      };
+      results[site.siteId] = isInvalidSiteError(error)
+        ? createInvalidSiteResult(error)
+        : {
+          status: 'failed',
+          message: error.message
+        };
     }
+    await chrome.storage.local.set({ checkInResults: results });
 
     await sleep(2000);
   }
 
-  chrome.storage.local.set({
+  await chrome.storage.local.set({
     lastCheckInTime: new Date().toISOString(),
-    checkInResults: results
+    checkInResults: normalizeCheckInResultsForRun(results),
+    checkInRunState: clearCheckInRunningState(startedRunState)
   });
 
   // 显示最终结果badge
   const successCount = Object.values(results).filter(r => r.status === 'success').length;
   const alreadyCount = Object.values(results).filter(r => r.status === 'already').length;
-  const failedCount = Object.values(results).filter(r => r.status === 'failed').length;
+  const failedCount = Object.values(results).filter(r => r.status === 'failed' || r.status === 'invalid').length;
 
   if (failedCount > 0) {
     chrome.action.setBadgeBackgroundColor({ color: '#dc3545' });
@@ -135,21 +179,67 @@ async function executeAllCheckIns() {
   return results;
 }
 
+async function maybeUpdateSiteName(site) {
+  const rawSite = {
+    domain: site.cookieDomain,
+    name: site.siteName
+  };
+  if (!shouldAutoFetchSiteName(rawSite)) return site;
+
+  const fetchedName = await fetchSiteDisplayName(site);
+  if (!fetchedName) return site;
+
+  await updateRawSiteName(site.cookieDomain, fetchedName);
+  console.log(`${site.siteName} 自动获取站点名称: ${fetchedName}`);
+
+  return buildSiteConfig({
+    domain: site.cookieDomain,
+    name: fetchedName,
+    enabled: site.enabled,
+    mode: site.mode,
+    type: site.type,
+    pageUrl: site.visitUrl
+  });
+}
+
+async function fetchSiteDisplayName(site) {
+  let tab;
+  try {
+    tab = await createTemporaryBackgroundTab(site.visitUrl, 15000);
+    await sleep(1000);
+
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => ({
+        title: document.title,
+        ogSiteName: document.querySelector('meta[property="og:site_name"]')?.content || '',
+        applicationName: document.querySelector('meta[name="application-name"]')?.content || '',
+        siteName: document.querySelector('meta[name="site-name"]')?.content || ''
+      })
+    });
+
+    return pickSiteDisplayName(results[0]?.result || {}, site.cookieDomain);
+  } catch (e) {
+    if (isInvalidSiteError(e)) throw e;
+    console.warn(`${site.siteName} 获取站点名称失败:`, e);
+    return null;
+  } finally {
+    if (tab?.id) {
+      try { await chrome.tabs.remove(tab.id); } catch (e) {}
+    }
+  }
+}
+
 // 单个站点访问
 async function visitSite(site) {
   let tab;
   try {
-    tab = await chrome.tabs.create({
-      url: site.visitUrl,
-      active: false
-    });
-
-    await waitForTabComplete(tab.id, 20000);
+    tab = await createTemporaryBackgroundTab(site.visitUrl, 20000);
     await sleep(3000);
 
     const tabInfo = await chrome.tabs.get(tab.id);
-    if (!tabInfo.url || tabInfo.url.startsWith('chrome-error://')) {
-      return { status: 'failed', message: '访问失败' };
+    if (isInvalidTabUrl(tabInfo.url)) {
+      return { status: 'invalid', message: '站点页面失效' };
     }
 
     const results = await chrome.scripting.executeScript({
@@ -163,8 +253,8 @@ async function visitSite(site) {
     });
 
     const page = results[0]?.result;
-    if (!page || page.url.startsWith('chrome-error://')) {
-      return { status: 'failed', message: '访问失败' };
+    if (!page || isInvalidTabUrl(page.url)) {
+      return { status: 'invalid', message: '站点页面失效' };
     }
 
     const loaded = page.readyState === 'complete' || page.readyState === 'interactive';
@@ -208,8 +298,7 @@ function getResolvedVisitUrl(site, type) {
 async function detectSiteType(site) {
   let tab;
   try {
-    tab = await getOrCreateTab(site.cookieDomain, site.visitUrl);
-    await waitForTabComplete(tab.id, 15000);
+    tab = await createTemporaryBackgroundTab(site.visitUrl, 15000);
     await sleep(1000);
 
     const results = await chrome.scripting.executeScript({
@@ -255,12 +344,11 @@ async function detectSiteType(site) {
     if (results[0]?.result === 'zenapi') return 'zenapi';
     return 'newapi';
   } catch (e) {
+    if (isInvalidSiteError(e)) throw e;
     console.warn(`${site.siteName} 自动识别站点类型失败，回退 New API:`, e);
     return 'newapi';
   } finally {
-    if (tab?._autoCreated) {
-      try { await chrome.tabs.remove(tab.id); } catch (e) {}
-    }
+    await closeTabQuietly(tab?.id);
   }
 }
 
@@ -280,6 +368,16 @@ async function updateRawSiteType(domain, type) {
   await saveSitesConfig(nextSites);
 }
 
+async function updateRawSiteName(domain, name) {
+  const sites = await loadRawSites();
+  const nextSites = sites.map(site => {
+    if (site.domain !== domain) return site;
+    if (!shouldAutoFetchSiteName(site)) return site;
+    return { ...site, name };
+  });
+  await saveSitesConfig(nextSites);
+}
+
 // 单个站点签到
 async function checkInSite(site) {
   if (site.type === 'sub2api') {
@@ -289,52 +387,23 @@ async function checkInSite(site) {
     return checkInZenApiSite(site);
   }
 
-  // 1. 优先使用缓存的认证头
-  let authHeaders = await getCachedHeaders(site.siteId);
-  let tabToCleanup = null;
+  // 1. 统一认证顺序：缓存 -> 浏览器已有登录态 -> linux.do OAuth
+  const authResult = await getNewApiAuthHeaders(site);
+  let authHeaders = authResult?.headers;
+  let tabToCleanup = authResult?.tabToCleanup || null;
 
-  if (authHeaders) {
-    console.log(`${site.siteName} 使用缓存认证头`);
-  } else {
-    // 没有缓存，先尝试自动 OAuth 登录
-    console.log(`${site.siteName} 无缓存认证头，尝试自动 OAuth 登录...`);
-    const oauthResult = await autoOAuthLogin(site.cookieDomain, site.visitUrl);
-
-    if (oauthResult) {
-      authHeaders = oauthResult.headers;
-      await cacheHeaders(site.siteId, authHeaders);
-      tabToCleanup = oauthResult.tabId;
-      console.log(`${site.siteName} OAuth 登录成功`);
-    } else {
-      // OAuth 失败，回退到标签页捕获
-      console.log(`${site.siteName} OAuth 失败，尝试从已有标签页捕获...`);
-      const tab = await getOrCreateTab(site.cookieDomain);
-      console.log(`${site.siteName} 使用标签页 ${tab.id} (${tab.url})`);
-
-      authHeaders = await captureAuthHeaders(site.cookieDomain, tab.id);
-      if (!authHeaders || Object.keys(authHeaders).length === 0) {
-        if (tab._autoCreated) try { await chrome.tabs.remove(tab.id); } catch (e) {}
-        throw new Error('无法捕获认证头，请先登录 linux.do 后重试');
-      }
-      await cacheHeaders(site.siteId, authHeaders);
-      if (tab._autoCreated) tabToCleanup = tab.id;
-    }
+  if (!authHeaders) {
+    throw new Error('无法获取认证信息，请先登录目标站点或 linux.do 后重试');
   }
 
   // 2. 执行签到
   let execResult = await doCheckInRequest(site.signExecUrl, site.signExecMethod, site.signExecParams, authHeaders);
+  let officialPageFallbackTried = false;
   console.log(`${site.siteName} 签到响应:`, execResult);
 
   if (execResult.requiresPageExecution) {
-    console.log(`${site.siteName} 要求在官方页面内签到，切换到页面上下文重试...`);
-    const pageResult = await checkInNewApiFromOfficialPage(site);
-    if (pageResult.tabId && !tabToCleanup) tabToCleanup = pageResult.tabId;
-    execResult = pageResult.result;
-    console.log(`${site.siteName} 页面上下文签到响应:`, execResult);
-
-    if (pageResult.keepTabOpen) {
-      tabToCleanup = null;
-    }
+    ({ execResult, tabToCleanup } = await tryOfficialPageFallback(site, execResult, tabToCleanup));
+    officialPageFallbackTried = true;
   }
 
   // 3. 检测 Cloudflare 错误（cf_clearance 过期或被拦截）
@@ -346,71 +415,45 @@ async function checkInSite(site) {
     console.log(`${site.siteName} 检测到 Cloudflare 防护，清除缓存并重新登录...`);
     await clearCachedHeaders(site.siteId);
 
-    const oauthResult = await autoOAuthLogin(site.cookieDomain, site.visitUrl);
-    if (oauthResult) {
+    const refreshedAuth = await getNewApiAuthHeaders(site, { forceRefresh: true, needsTabExecution: true });
+    if (refreshedAuth?.headers) {
       // 标记该站点需要在标签页中执行（绕过 Cloudflare）
-      oauthResult.headers._needsTabExecution = true;
-      await cacheHeaders(site.siteId, oauthResult.headers);
-      const retryResult = await doCheckInRequest(site.signExecUrl, site.signExecMethod, site.signExecParams, oauthResult.headers);
-      console.log(`${site.siteName} OAuth 重试签到响应:`, retryResult);
+      refreshedAuth.headers._needsTabExecution = true;
+      await cacheHeaders(site.siteId, refreshedAuth.headers);
+      const retryResult = await doCheckInRequest(site.signExecUrl, site.signExecMethod, site.signExecParams, refreshedAuth.headers);
+      console.log(`${site.siteName} 刷新认证后重试签到响应:`, retryResult);
 
-      try { await chrome.tabs.remove(oauthResult.tabId); } catch (e) {}
-      if (tabToCleanup) try { await chrome.tabs.remove(tabToCleanup); } catch (e) {}
-      return formatResult(retryResult);
+      const fallback = await tryOfficialPageFallback(site, retryResult, refreshedAuth.tabToCleanup);
+      if (fallback.tabToCleanup) try { await chrome.tabs.remove(fallback.tabToCleanup); } catch (e) {}
+      if (tabToCleanup && tabToCleanup !== fallback.tabToCleanup) try { await chrome.tabs.remove(tabToCleanup); } catch (e) {}
+      return formatResult(fallback.execResult);
     }
-
-    // OAuth 失败，回退到标签页捕获
-    const tab = await getOrCreateTab(site.cookieDomain);
-    const freshHeaders = await captureAuthHeaders(site.cookieDomain, tab.id);
-
-    if (freshHeaders && Object.keys(freshHeaders).length > 0) {
-      // 标记该站点需要在标签页中执行（绕过 Cloudflare）
-      freshHeaders._needsTabExecution = true;
-      await cacheHeaders(site.siteId, freshHeaders);
-      const retryResult = await doCheckInRequest(site.signExecUrl, site.signExecMethod, site.signExecParams, freshHeaders);
-      console.log(`${site.siteName} 重试签到响应:`, retryResult);
-      if (tab._autoCreated) try { await chrome.tabs.remove(tab.id); } catch (e) {}
-      if (tabToCleanup) try { await chrome.tabs.remove(tabToCleanup); } catch (e) {}
-      return formatResult(retryResult);
-    }
-
-    if (tab._autoCreated) try { await chrome.tabs.remove(tab.id); } catch (e) {}
     if (tabToCleanup) try { await chrome.tabs.remove(tabToCleanup); } catch (e) {}
     throw new Error('Cloudflare 验证失败，重新登录失败');
   }
 
-  // 4. 如果 401，尝试 OAuth 重新登录
+  // 4. 如果 401，重新按“浏览器已有登录态 -> OAuth”顺序获取认证
   if (execResult.httpStatus === 401) {
-    console.log(`${site.siteName} 认证过期，尝试 OAuth 重新登录...`);
+    console.log(`${site.siteName} 认证过期，尝试刷新浏览器登录态...`);
     await clearCachedHeaders(site.siteId);
 
-    const oauthResult = await autoOAuthLogin(site.cookieDomain, site.visitUrl);
-    if (oauthResult) {
-      await cacheHeaders(site.siteId, oauthResult.headers);
-      const retryResult = await doCheckInRequest(site.signExecUrl, site.signExecMethod, site.signExecParams, oauthResult.headers);
-      console.log(`${site.siteName} OAuth 重试签到响应:`, retryResult);
+    const refreshedAuth = await getNewApiAuthHeaders(site, { forceRefresh: true });
+    if (refreshedAuth?.headers) {
+      await cacheHeaders(site.siteId, refreshedAuth.headers);
+      const retryResult = await doCheckInRequest(site.signExecUrl, site.signExecMethod, site.signExecParams, refreshedAuth.headers);
+      console.log(`${site.siteName} 刷新认证后重试签到响应:`, retryResult);
 
-      try { await chrome.tabs.remove(oauthResult.tabId); } catch (e) {}
-      if (tabToCleanup) try { await chrome.tabs.remove(tabToCleanup); } catch (e) {}
-      return formatResult(retryResult);
+      const fallback = await tryOfficialPageFallback(site, retryResult, refreshedAuth.tabToCleanup);
+      if (fallback.tabToCleanup) try { await chrome.tabs.remove(fallback.tabToCleanup); } catch (e) {}
+      if (tabToCleanup && tabToCleanup !== fallback.tabToCleanup) try { await chrome.tabs.remove(tabToCleanup); } catch (e) {}
+      return formatResult(fallback.execResult);
     }
-
-    // OAuth 失败，回退到标签页捕获
-    const tab = await getOrCreateTab(site.cookieDomain);
-    const freshHeaders = await captureAuthHeaders(site.cookieDomain, tab.id);
-
-    if (freshHeaders && Object.keys(freshHeaders).length > 0) {
-      await cacheHeaders(site.siteId, freshHeaders);
-      const retryResult = await doCheckInRequest(site.signExecUrl, site.signExecMethod, site.signExecParams, freshHeaders);
-      console.log(`${site.siteName} 重试签到响应:`, retryResult);
-      if (tab._autoCreated) try { await chrome.tabs.remove(tab.id); } catch (e) {}
-      if (tabToCleanup) try { await chrome.tabs.remove(tabToCleanup); } catch (e) {}
-      return formatResult(retryResult);
-    }
-
-    if (tab._autoCreated) try { await chrome.tabs.remove(tab.id); } catch (e) {}
     if (tabToCleanup) try { await chrome.tabs.remove(tabToCleanup); } catch (e) {}
-    throw new Error('认证已过期，OAuth 重新登录失败');
+    throw new Error('认证已过期，刷新浏览器登录态失败');
+  }
+
+  if (!officialPageFallbackTried) {
+    ({ execResult, tabToCleanup } = await tryOfficialPageFallback(site, execResult, tabToCleanup));
   }
 
   // 4. 查询验证
@@ -440,7 +483,7 @@ async function checkInSub2ApiSite(site) {
   let tabToCleanup = null;
 
   if (!hasAuthorizationHeader(authHeaders)) {
-    const tab = await getOrCreateTab(site.cookieDomain, site.visitUrl);
+    const tab = await createTemporaryBackgroundTab(site.visitUrl);
     authHeaders = await readSub2ApiAuthHeadersFromTab(tab.id, authHeaders);
 
     if (!hasAuthorizationHeader(authHeaders)) {
@@ -449,12 +492,12 @@ async function checkInSub2ApiSite(site) {
     }
 
     if (!hasAuthorizationHeader(authHeaders)) {
-      if (tab._autoCreated) try { await chrome.tabs.remove(tab.id); } catch (e) {}
+      await closeTabQuietly(tab.id);
       throw new Error('无法读取 Sub2API 登录令牌，请先在浏览器中登录该站点');
     }
 
     await cacheHeaders(site.siteId, authHeaders);
-    if (tab._autoCreated) tabToCleanup = tab.id;
+    tabToCleanup = tab.id;
   }
 
   const sub2ApiHeaders = { ...authHeaders, _needsTabExecution: true, _successOnHttpOk: true };
@@ -463,7 +506,7 @@ async function checkInSub2ApiSite(site) {
 
   if (execResult.httpStatus === 401 || execResult.httpStatus === 403) {
     await clearCachedHeaders(site.siteId);
-    const tab = await getOrCreateTab(site.cookieDomain, site.visitUrl);
+    const tab = await createTemporaryBackgroundTab(site.visitUrl);
     authHeaders = await readSub2ApiAuthHeadersFromTab(tab.id, null);
 
     if (hasAuthorizationHeader(authHeaders)) {
@@ -471,14 +514,14 @@ async function checkInSub2ApiSite(site) {
       await cacheHeaders(site.siteId, authHeaders);
       execResult = await doCheckInRequest(site.signExecUrl, site.signExecMethod, site.signExecParams, retryHeaders);
       console.log(`${site.siteName} Sub2API 重新读取令牌后签到响应:`, execResult);
-      if (tab._autoCreated) tabToCleanup = tab.id;
+      if (tabToCleanup && tabToCleanup !== tab.id) await closeTabQuietly(tabToCleanup);
+      tabToCleanup = tab.id;
+    } else {
+      await closeTabQuietly(tab.id);
     }
   }
 
-  if (execResult.httpStatus === 401 || execResult.httpStatus === 403) {
-    if (tabToCleanup) try { await chrome.tabs.remove(tabToCleanup); } catch (e) {}
-    throw new Error('Sub2API 登录已失效，请先重新登录该站点');
-  }
+  ({ execResult, tabToCleanup } = await tryOfficialPageFallback(site, execResult, tabToCleanup));
 
   if (tabToCleanup) try { await chrome.tabs.remove(tabToCleanup); } catch (e) {}
 
@@ -492,7 +535,7 @@ async function checkInZenApiSite(site) {
   let tabToCleanup = null;
 
   if (!hasAuthorizationHeader(authHeaders)) {
-    const tab = await getOrCreateTab(site.cookieDomain, site.visitUrl);
+    const tab = await createTemporaryBackgroundTab(site.visitUrl);
     authHeaders = await readStorageTokenAuthHeadersFromTab(tab.id, ['user_token'], authHeaders);
 
     if (!hasAuthorizationHeader(authHeaders)) {
@@ -502,12 +545,12 @@ async function checkInZenApiSite(site) {
     }
 
     if (!hasAuthorizationHeader(authHeaders)) {
-      if (tab._autoCreated) try { await chrome.tabs.remove(tab.id); } catch (e) {}
+      await closeTabQuietly(tab.id);
       throw new Error('ZenAPI 登录失败，请确认浏览器已登录 linux.do 后重试');
     }
 
     await cacheHeaders(site.siteId, authHeaders);
-    if (tab._autoCreated) tabToCleanup = tab.id;
+    tabToCleanup = tab.id;
   }
 
   const zenApiHeaders = { ...authHeaders, _needsTabExecution: true };
@@ -516,7 +559,7 @@ async function checkInZenApiSite(site) {
 
   if (execResult.httpStatus === 401 || execResult.httpStatus === 403) {
     await clearCachedHeaders(site.siteId);
-    const tab = await getOrCreateTab(site.cookieDomain, site.visitUrl);
+    const tab = await createTemporaryBackgroundTab(site.visitUrl);
     authHeaders = await readStorageTokenAuthHeadersFromTab(tab.id, ['user_token'], null);
 
     if (!hasAuthorizationHeader(authHeaders)) {
@@ -529,14 +572,14 @@ async function checkInZenApiSite(site) {
       await cacheHeaders(site.siteId, authHeaders);
       execResult = await doCheckInRequest(site.signExecUrl, site.signExecMethod, site.signExecParams, retryHeaders);
       console.log(`${site.siteName} ZenAPI 重新读取令牌后签到响应:`, execResult);
-      if (tab._autoCreated) tabToCleanup = tab.id;
+      if (tabToCleanup && tabToCleanup !== tab.id) await closeTabQuietly(tabToCleanup);
+      tabToCleanup = tab.id;
+    } else {
+      await closeTabQuietly(tab.id);
     }
   }
 
-  if (execResult.httpStatus === 401 || execResult.httpStatus === 403) {
-    if (tabToCleanup) try { await chrome.tabs.remove(tabToCleanup); } catch (e) {}
-    throw new Error('ZenAPI 登录已失效，请先重新登录该站点');
-  }
+  ({ execResult, tabToCleanup } = await tryOfficialPageFallback(site, execResult, tabToCleanup));
 
   if (tabToCleanup) try { await chrome.tabs.remove(tabToCleanup); } catch (e) {}
 
@@ -545,25 +588,68 @@ async function checkInZenApiSite(site) {
   return result;
 }
 
-async function checkInNewApiFromOfficialPage(site) {
-  const tab = await getOrCreateTab(site.cookieDomain, site.visitUrl);
-  await chrome.tabs.update(tab.id, { url: site.visitUrl, active: true });
-  await waitForTabComplete(tab.id, 20000);
+async function tryOfficialPageFallback(site, execResult, tabToCleanup = null) {
+  if (!shouldTryOfficialPageCheckIn(execResult)) {
+    return { execResult, tabToCleanup };
+  }
+
+  console.log(`${site.siteName} 接口签到失败，尝试打开官方页面点击签到按钮...`);
+  let pageResult;
+  try {
+    pageResult = await checkInFromOfficialPage(site);
+  } catch (e) {
+    if (tabToCleanup) await closeTabQuietly(tabToCleanup);
+    throw e;
+  }
+  let nextTabToCleanup = tabToCleanup;
+
+  if (pageResult.tabId) {
+    if (pageResult.keepTabOpen) {
+      if (tabToCleanup && tabToCleanup !== pageResult.tabId) {
+        try { await chrome.tabs.remove(tabToCleanup); } catch (e) {}
+      }
+      nextTabToCleanup = null;
+    } else if (nextTabToCleanup && nextTabToCleanup !== pageResult.tabId) {
+      try { await chrome.tabs.remove(pageResult.tabId); } catch (e) {}
+    } else {
+      nextTabToCleanup = pageResult.tabId;
+    }
+  }
+
+  console.log(`${site.siteName} 官方页面兜底签到响应:`, pageResult.result);
+  return { execResult: pageResult.result, tabToCleanup: nextTabToCleanup };
+}
+
+async function checkInFromOfficialPage(site) {
+  const tab = await createTemporaryBackgroundTab(site.visitUrl, 20000);
   await sleep(3000);
 
   const results = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
-    func: async () => {
+    func: async (targetUrl) => {
       const originalFetch = window.fetch;
       const originalXhrOpen = window.XMLHttpRequest?.prototype?.open;
       const originalXhrSend = window.XMLHttpRequest?.prototype?.send;
       const checkInResponses = [];
+      let targetPath = '';
+
+      try {
+        targetPath = new URL(targetUrl).pathname;
+      } catch (e) {}
 
       function recordCheckInResponse(url, method, status, text) {
         try {
-          if (!url || !String(url).includes('/api/user/checkin') || String(method || 'GET').toUpperCase() !== 'POST') {
+          if (!url || String(method || 'GET').toUpperCase() !== 'POST') {
             return;
           }
+          const requestPath = new URL(String(url), location.origin).pathname;
+          const commonCheckInPath =
+            requestPath.includes('/checkin') ||
+            requestPath.includes('/check-in') ||
+            requestPath.includes('/signin') ||
+            requestPath.includes('/sign-in');
+          if (requestPath !== targetPath && !commonCheckInPath) return;
+
           let data = null;
           try { data = JSON.parse(text); } catch (e) {}
           checkInResponses.push({ httpStatus: status, data, text });
@@ -577,7 +663,7 @@ async function checkInNewApiFromOfficialPage(site) {
           const options = args[1] || {};
           const url = typeof request === 'string' ? request : request?.url;
           const method = String(options.method || request?.method || 'GET').toUpperCase();
-          if (url && url.includes('/api/user/checkin') && method === 'POST') {
+          if (url && method === 'POST') {
             const clone = response.clone();
             const text = await clone.text();
             recordCheckInResponse(url, method, response.status, text);
@@ -629,13 +715,28 @@ async function checkInNewApiFromOfficialPage(site) {
           const disabled = el.disabled || el.getAttribute('aria-disabled') === 'true';
           return !disabled &&
             isVisible(el) &&
-            /Check in now|立即签到|现在签到|^签到$/i.test(text) &&
+            /Check in now|check.?in|daily check.?in|立即签到|现在签到|每日签到|^签$|^签到$/i.test(text) &&
             !/Checked in|已签到/i.test(text);
+        });
+      }
+
+      function hasDisabledCheckInButton() {
+        const candidates = Array.from(document.querySelectorAll('button, [role="button"]'));
+        return candidates.some((el) => {
+          const text = (el.textContent || '').trim();
+          const disabled = el.disabled || el.getAttribute('aria-disabled') === 'true';
+          return disabled &&
+            isVisible(el) &&
+            /Check in now|check.?in|daily check.?in|立即签到|现在签到|每日签到|^签$|^签到$/i.test(text) &&
+            !/Loading|加载|处理中/i.test(text);
         });
       }
 
       try {
         if (hasCheckedInText()) {
+          return { kind: 'already', message: '今日已签到' };
+        }
+        if (hasDisabledCheckInButton()) {
           return { kind: 'already', message: '今日已签到' };
         }
 
@@ -644,8 +745,8 @@ async function checkInNewApiFromOfficialPage(site) {
           return {
             kind: hasSecurityCheck() ? 'security-check' : 'no-button',
             message: hasSecurityCheck()
-              ? '需要在打开的网页完成 Turnstile 安全验证后重试'
-              : '未找到官方页面签到按钮，请在打开的网页手动点击签到'
+              ? '站点要求完成 Turnstile 安全验证，自动签到已停止'
+              : '未找到官方页面签到按钮，自动签到失败'
           };
         }
 
@@ -659,7 +760,7 @@ async function checkInNewApiFromOfficialPage(site) {
           if (hasSecurityCheck()) {
             return {
               kind: 'security-check',
-              message: '需要在打开的网页完成 Turnstile 安全验证后重试'
+              message: '站点要求完成 Turnstile 安全验证，自动签到已停止'
             };
           }
           if (hasCheckedInText()) {
@@ -669,7 +770,7 @@ async function checkInNewApiFromOfficialPage(site) {
 
         return {
           kind: 'timeout',
-          message: '官方页面签到请求超时，请在打开的网页查看是否需要手动操作'
+          message: '官方页面签到请求超时，自动签到失败'
         };
       } finally {
         window.fetch = originalFetch;
@@ -678,7 +779,8 @@ async function checkInNewApiFromOfficialPage(site) {
           window.XMLHttpRequest.prototype.send = originalXhrSend;
         }
       }
-    }
+    },
+    args: [site.signExecUrl]
   });
 
   const pageResult = results[0]?.result || {};
@@ -687,14 +789,14 @@ async function checkInNewApiFromOfficialPage(site) {
   if (pageResult.kind === 'response' && pageResult.data) {
     const parsed = parseCheckInResponse(pageResult.data, pageResult.httpStatus, false);
     if (parsed.requiresPageExecution) {
-      parsed.message = '站点仍要求在官方网页手动点击签到，已打开页面，请在页面中手动完成';
-      return { result: parsed, tabId: tab.id, keepTabOpen: true };
+      parsed.message = '站点仍要求页面内操作，自动签到已停止';
+      return { result: parsed, tabId: tab.id, keepTabOpen: shouldKeepOfficialPageFallbackTabOpen(parsed) };
     }
     if (parsed.requiresSecurityCheck) {
-      parsed.message = '需要在打开的网页完成 Turnstile 安全验证后重试';
-      return { result: parsed, tabId: tab.id, keepTabOpen: true };
+      parsed.message = '站点要求完成 Turnstile 安全验证，自动签到已停止';
+      return { result: parsed, tabId: tab.id, keepTabOpen: shouldKeepOfficialPageFallbackTabOpen(parsed) };
     }
-    return { result: parsed, tabId: tab.id, keepTabOpen: false };
+    return { result: parsed, tabId: tab.id, keepTabOpen: shouldKeepOfficialPageFallbackTabOpen(parsed) };
   }
 
   if (pageResult.kind === 'already') {
@@ -714,12 +816,12 @@ async function checkInNewApiFromOfficialPage(site) {
   return {
     result: {
       success: false,
-      message: pageResult.message || '官方页面签到失败，请在打开的网页手动完成',
+      message: getOfficialPageFallbackFailureMessage(pageResult),
       httpStatus: pageResult.kind === 'security-check' ? 403 : 0,
       data: pageResult
     },
     tabId: tab.id,
-    keepTabOpen: true
+    keepTabOpen: false
   };
 }
 
@@ -733,8 +835,9 @@ async function autoZenApiOAuthLogin(domain, tabId = null) {
   }
 
   let tab;
+  const ownsTab = !tabId;
   try {
-    tab = tabId ? await chrome.tabs.get(tabId) : await getOrCreateTab(domain, `https://${domain}/login`);
+    tab = tabId ? await chrome.tabs.get(tabId) : await createTemporaryBackgroundTab(`https://${domain}/login`);
     await chrome.tabs.update(tab.id, { url: buildZenApiLoginUrl(domain) });
     await waitForTabComplete(tab.id, 20000);
     await sleep(1000);
@@ -747,6 +850,7 @@ async function autoZenApiOAuthLogin(domain, tabId = null) {
       const redirected = await waitForTabUrlMatch(tab.id, domain, 30000);
       if (!redirected) {
         console.warn('[ZenAPI OAuth] 等待回跳 ZenAPI 超时');
+        if (ownsTab) await closeTabQuietly(tab.id);
         return null;
       }
       await waitForTabComplete(tab.id, 20000);
@@ -777,12 +881,14 @@ async function autoZenApiOAuthLogin(domain, tabId = null) {
 
     if (!hasAuthorizationHeader(headers)) {
       console.warn('[ZenAPI OAuth] 未能读取 user_token');
+      if (ownsTab) await closeTabQuietly(tab.id);
       return null;
     }
 
     return { headers, tabId: tab.id };
   } catch (e) {
     console.warn('[ZenAPI OAuth] 登录失败:', e);
+    if (ownsTab) await closeTabQuietly(tab?.id);
     return null;
   }
 }
@@ -853,6 +959,9 @@ async function readStorageTokenAuthHeadersFromTab(tabId, tokenKeys, baseHeaders 
 }
 
 function formatResult(execResult) {
+  if (execResult.invalidSite) {
+    return { status: 'invalid', message: execResult.message || '站点页面失效' };
+  }
   if (execResult.error) {
     return { status: 'failed', message: execResult.error };
   }
@@ -866,7 +975,7 @@ function formatResult(execResult) {
 }
 
 // 通过 webRequest 捕获页面真实请求头
-function captureAuthHeaders(domain, tabId) {
+function captureAuthHeaders(domain, tabId, { timeout = 25000 } = {}) {
   return new Promise(async (resolve) => {
     let resolved = false;
 
@@ -917,8 +1026,8 @@ function captureAuthHeaders(domain, tabId) {
       console.warn('刷新标签页失败:', e);
     }
 
-    // 等待页面加载完成 + API 请求发出（增加到25秒）
-    await sleep(25000);
+    // 等待页面加载完成 + API 请求发出
+    await sleep(timeout);
 
     // 超时
     if (!resolved) {
@@ -979,6 +1088,14 @@ async function doCheckInRequest(url, method, params, capturedHeaders) {
             }
 
             const response = await fetch(fetchUrl, options);
+            if (response.status === 404 || response.status === 410) {
+              return {
+                success: false,
+                invalidSite: true,
+                message: '站点页面失效',
+                httpStatus: response.status
+              };
+            }
             const text = await response.text();
 
             // 尝试解析JSON
@@ -1007,8 +1124,8 @@ async function doCheckInRequest(url, method, params, capturedHeaders) {
               '签到完成';
             const msgStr = typeof message === 'string' ? message : JSON.stringify(message);
 
-            const alreadyKeywords = ['已签到', '已经签到', 'already', '重复签到'];
-            const alreadyCheckedIn = zenApiAlreadyCheckedIn || (!success && alreadyKeywords.some(k => msgStr.includes(k)));
+            const alreadyKeywords = ['已签到', '已经签到', '已签过', '今日已签', 'already', '重复签到'];
+            const alreadyCheckedIn = zenApiAlreadyCheckedIn || alreadyKeywords.some(k => msgStr.includes(k));
 
             return {
               success: success || alreadyCheckedIn,
@@ -1061,9 +1178,12 @@ async function doFetchWithHeaders(url, method, params, capturedHeaders) {
     options.body = JSON.stringify(params);
   }
 
-  try {
-    const response = await fetch(url, options);
-    const data = await response.json();
+    try {
+      const response = await fetch(url, options);
+      if (isInvalidHttpStatus(response.status)) {
+        return { success: false, invalidSite: true, message: '站点页面失效', httpStatus: response.status };
+      }
+      const data = await response.json();
 
     console.log(`[fetch] 响应状态: ${response.status}, 数据:`, JSON.stringify(data).substring(0, 200));
 
@@ -1100,6 +1220,125 @@ async function clearCachedHeaders(siteId) {
   const cache = data.authHeadersCache || {};
   delete cache[siteId];
   await chrome.storage.local.set({ authHeadersCache: cache });
+}
+
+async function getNewApiAuthHeaders(site, { forceRefresh = false, needsTabExecution = false } = {}) {
+  if (!forceRefresh) {
+    const cachedHeaders = await getCachedHeaders(site.siteId);
+    if (cachedHeaders) {
+      console.log(`${site.siteName} 使用缓存认证头`);
+      return { headers: cachedHeaders, tabToCleanup: null, source: 'cache' };
+    }
+  }
+
+  console.log(`${site.siteName} 无可用缓存，先检查浏览器已有登录态...`);
+  const existingSession = await getNewApiExistingSessionAuthHeaders(site, { needsTabExecution });
+  if (existingSession?.headers && !shouldTryNewApiOAuth({ hasExistingSessionHeaders: true })) {
+    await cacheHeaders(site.siteId, existingSession.headers);
+    console.log(`${site.siteName} 已复用浏览器已有登录态`);
+    return existingSession;
+  }
+
+  console.log(`${site.siteName} 未检测到可复用登录态，尝试 linux.do OAuth...`);
+  const oauthResult = await autoOAuthLogin(site.cookieDomain, site.visitUrl);
+  if (oauthResult?.headers) {
+    if (needsTabExecution) {
+      oauthResult.headers._needsTabExecution = true;
+    }
+    await cacheHeaders(site.siteId, oauthResult.headers);
+    console.log(`${site.siteName} OAuth 登录成功`);
+    return { headers: oauthResult.headers, tabToCleanup: oauthResult.tabId || null, source: 'oauth' };
+  }
+
+  return null;
+}
+
+async function getNewApiExistingSessionAuthHeaders(site, { needsTabExecution = false } = {}) {
+  const tab = await createTemporaryBackgroundTab(getNewApiPostLoginUrl(site.cookieDomain, site.visitUrl), 15000);
+  try {
+    await sleep(1500);
+
+    const session = await inspectNewApiBrowserSession(tab.id);
+    console.log(`${site.siteName} 浏览器登录态检查:`, JSON.stringify({
+      hasUser: session?.hasUser,
+      userAuthenticated: session?.userAuthenticated,
+      selfStatus: session?.selfStatus,
+      hasToken: Boolean(session?.token)
+    }));
+
+    if (!session?.success || !hasNewApiUserSession(session)) {
+      await closeTabQuietly(tab.id);
+      return null;
+    }
+
+    const cookies = await chrome.cookies.getAll({ domain: site.cookieDomain });
+    let headers = buildNewApiExistingSessionHeaders({
+      cookies,
+      user: session.user,
+      token: session.token,
+      tabId: tab.id
+    });
+
+    if (!headers.Cookie && !headers.cookie && !headers.Authorization) {
+      const capturedHeaders = await captureAuthHeaders(site.cookieDomain, tab.id, { timeout: 5000 });
+      headers = buildNewApiExistingSessionHeaders({
+        cookies,
+        user: session.user,
+        token: session.token,
+        tabId: tab.id,
+        baseHeaders: capturedHeaders || headers
+      });
+    }
+
+    if (needsTabExecution) {
+      headers._needsTabExecution = true;
+    }
+
+    return { headers, tabToCleanup: tab.id, source: 'browser-session' };
+  } catch (e) {
+    console.warn(`${site.siteName} 检查浏览器已有登录态失败:`, e);
+    await closeTabQuietly(tab.id);
+    return null;
+  }
+}
+
+async function inspectNewApiBrowserSession(tabId) {
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: async () => {
+      try {
+        const user = localStorage.getItem('user');
+        const token = localStorage.getItem('token') || localStorage.getItem('access_token') || localStorage.getItem('auth_token');
+        let selfData = null;
+        let selfStatus = 0;
+        let userAuthenticated = false;
+
+        try {
+          const selfResp = await fetch('/api/user/self', { credentials: 'include' });
+          selfStatus = selfResp.status;
+          selfData = await selfResp.json();
+          userAuthenticated = selfResp.ok &&
+            selfStatus !== 401 &&
+            selfData?.success !== false &&
+            Boolean(selfData?.data || selfData?.success === true);
+        } catch (e) {}
+
+        return {
+          success: true,
+          hasUser: user !== null,
+          user,
+          token,
+          userAuthenticated,
+          selfStatus,
+          selfData
+        };
+      } catch (e) {
+        return { success: false, error: e.message };
+      }
+    }
+  });
+
+  return results[0]?.result || null;
 }
 
 // ============== Auto OAuth Login ==============
@@ -1154,8 +1393,8 @@ async function autoOAuthLogin(domain, visitUrl) {
   let clientId;
   let tab;
   try {
-    // 创建或获取标签页
-    tab = await getOrCreateTab(domain);
+    // 创建临时后台标签页，避免复用或打断用户正在浏览的页面
+    tab = await createTemporaryBackgroundTab(`https://${domain}/`);
 
     // 在标签页中执行 fetch 请求
     const results = await chrome.scripting.executeScript({
@@ -1174,20 +1413,20 @@ async function autoOAuthLogin(domain, visitUrl) {
     const result = results[0]?.result;
     if (!result?.success) {
       console.warn(`[OAuth] 获取 status 失败:`, result?.error);
-      if (tab._autoCreated) try { await chrome.tabs.remove(tab.id); } catch (e) {}
+      await closeTabQuietly(tab.id);
       return null;
     }
 
     clientId = result.data?.data?.linuxdo_client_id || result.data?.linuxdo_client_id;
     if (!clientId) {
       console.warn(`[OAuth] ${domain} 无 linuxdo_client_id`);
-      if (tab._autoCreated) try { await chrome.tabs.remove(tab.id); } catch (e) {}
+      await closeTabQuietly(tab.id);
       return null;
     }
     console.log(`[OAuth] client_id: ${clientId}`);
   } catch (e) {
     console.warn(`[OAuth] 获取 status 失败:`, e);
-    if (tab?._autoCreated) try { await chrome.tabs.remove(tab.id); } catch (e) {}
+    await closeTabQuietly(tab?.id);
     return null;
   }
 
@@ -1195,7 +1434,7 @@ async function autoOAuthLogin(domain, visitUrl) {
   const ldCookies = await chrome.cookies.getAll({ domain: 'linux.do' });
   if (ldCookies.length === 0) {
     console.warn('[OAuth] linux.do 未登录');
-    if (tab._autoCreated) try { await chrome.tabs.remove(tab.id); } catch (e) {}
+    await closeTabQuietly(tab.id);
     return null;
   }
   console.log(`[OAuth] linux.do cookies: ${ldCookies.length} 个`);
@@ -1219,14 +1458,14 @@ async function autoOAuthLogin(domain, visitUrl) {
     const result = results[0]?.result;
     if (!result?.success || !result?.data?.success || !result?.data?.data) {
       console.warn('[OAuth] 获取 state 失败:', result);
-      if (tab._autoCreated) try { await chrome.tabs.remove(tab.id); } catch (e) {}
+      await closeTabQuietly(tab.id);
       return null;
     }
     state = result.data.data;
     console.log(`[OAuth] 获取 state: ${state}`);
   } catch (e) {
     console.warn('[OAuth] 获取 state 异常:', e);
-    if (tab._autoCreated) try { await chrome.tabs.remove(tab.id); } catch (e) {}
+    await closeTabQuietly(tab.id);
     return null;
   }
 
@@ -1238,7 +1477,7 @@ async function autoOAuthLogin(domain, visitUrl) {
     console.log(`[OAuth] 使用标签页 ${tab.id} 进行 OAuth 授权`);
   } catch (e) {
     console.error('[OAuth] 更新标签页失败:', e);
-    if (tab._autoCreated) try { await chrome.tabs.remove(tab.id); } catch (e) {}
+    await closeTabQuietly(tab.id);
     return null;
   }
 
@@ -1290,7 +1529,7 @@ async function autoOAuthLogin(domain, visitUrl) {
       const redirected = await waitForTabUrlMatch(tab.id, domain, 20000);
       if (!redirected) {
         console.warn('[OAuth] 重定向超时');
-        try { await chrome.tabs.remove(tab.id); } catch (e) {}
+        await closeTabQuietly(tab.id);
         return null;
       }
       await waitForTabComplete(tab.id, 15000);
@@ -1300,7 +1539,7 @@ async function autoOAuthLogin(domain, visitUrl) {
     tabInfo = await chrome.tabs.get(tab.id);
     if (!tabInfo.url || !tabInfo.url.includes(domain)) {
       console.warn(`[OAuth] 未到达目标域: ${tabInfo.url}`);
-      try { await chrome.tabs.remove(tab.id); } catch (e) {}
+      await closeTabQuietly(tab.id);
       return null;
     }
     console.log(`[OAuth] 登录完成: ${tabInfo.url}`);
@@ -1415,7 +1654,7 @@ async function autoOAuthLogin(domain, visitUrl) {
 
     if (!sessionEstablished) {
       console.warn('[OAuth] session 未建立，OAuth 可能失败');
-      try { await chrome.tabs.remove(tab.id); } catch (e) {}
+      await closeTabQuietly(tab.id);
       return null;
     }
 
@@ -1436,7 +1675,7 @@ async function autoOAuthLogin(domain, visitUrl) {
     const headers = await captureAuthHeaders(domain, tab.id);
     if (!headers || Object.keys(headers).length === 0) {
       console.warn('[OAuth] 未捕获到认证头');
-      try { await chrome.tabs.remove(tab.id); } catch (e) {}
+      await closeTabQuietly(tab.id);
       return null;
     }
     console.log('[OAuth] 捕获到的请求头:', JSON.stringify(Object.keys(headers)));
@@ -1508,41 +1747,26 @@ async function autoOAuthLogin(domain, visitUrl) {
     return { headers, tabId: tab.id };
   } catch (e) {
     console.error('[OAuth] 失败:', e);
-    try { await chrome.tabs.remove(tab.id); } catch (e2) {}
+    await closeTabQuietly(tab?.id);
     return null;
   }
 }
 
-// 获取或创建标签页
-async function getOrCreateTab(domain, url = `https://${domain}/`) {
-  const tabs = await chrome.tabs.query({ url: `https://${domain}/*` });
-  if (tabs.length > 0) {
-    return tabs[0];
-  }
-
-  console.log(`未找到 ${domain} 的标签页，后台打开...`);
-  const tab = await chrome.tabs.create({
-    url,
-    active: false
-  });
-
-  await new Promise((resolve) => {
-    const listener = (tabId, changeInfo) => {
-      if (tabId === tab.id && changeInfo.status === 'complete') {
-        chrome.tabs.onUpdated.removeListener(listener);
-        resolve();
-      }
-    };
-    chrome.tabs.onUpdated.addListener(listener);
-    setTimeout(() => {
-      chrome.tabs.onUpdated.removeListener(listener);
-      resolve();
-    }, 15000);
-  });
-
-  await sleep(3000);
+async function createTemporaryBackgroundTab(url, timeout = 15000) {
+  const tab = await chrome.tabs.create(getTemporaryCheckInTabCreateOptions(url));
+  await waitForTabComplete(tab.id, timeout);
   tab._autoCreated = true;
+  const tabInfo = await chrome.tabs.get(tab.id);
+  if (isInvalidTabUrl(tabInfo.url)) {
+    await closeTabQuietly(tab.id);
+    throw createInvalidSiteError(url);
+  }
   return tab;
+}
+
+async function closeTabQuietly(tabId) {
+  if (!tabId) return;
+  try { await chrome.tabs.remove(tabId); } catch (e) {}
 }
 
 // 发送通知

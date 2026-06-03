@@ -263,6 +263,8 @@
     .site-status.success { background: var(--success-bg); color: var(--success-text); }
     .site-status.already { background: var(--info-bg); color: var(--info-text); }
     .site-status.failed { background: var(--danger-bg); color: var(--danger-text); }
+    .site-status.invalid { background: var(--danger-bg); color: var(--danger-text); }
+    .site-status.checking { background: var(--warning-bg); color: var(--warning-text); }
     .site-status.pending { background: var(--warning-bg); color: var(--warning-text); }
     .site-mode {
       padding: 3px 8px;
@@ -276,18 +278,6 @@
     .site-mode.visit {
       background: var(--visit-bg);
       color: var(--visit-text);
-    }
-    .site-mode.sub2api {
-      background: var(--info-bg);
-      color: var(--info-text);
-    }
-    .site-mode.zenapi {
-      background: var(--success-bg);
-      color: var(--success-text);
-    }
-    .site-mode.auto {
-      background: var(--warning-bg);
-      color: var(--warning-text);
     }
     .empty-state {
       padding: 16px 10px 8px;
@@ -438,7 +428,7 @@
   <div class="container">
     <div class="header">
       <h1>多网站自动签到</h1>
-      <p>New API 站点自动签到 | 每天 <span id="autoSignTimeLabel">09:00</span></p>
+      <p>多类型站点自动签到 | 每天 <span id="autoSignTimeLabel">09:00</span></p>
     </div>
 
     <div class="card">
@@ -461,7 +451,7 @@
         </div>
       </div>
 
-      <button class="btn btn-primary" id="checkInBtn">
+      <button class="btn btn-primary" id="checkInBtn" disabled title="请先添加并启用至少一个站点">
         <span id="btnText">立即签到</span>
       </button>
 
@@ -507,6 +497,7 @@
   <script src="backup-config.js"></script>
   <script src="site-url.js"></script>
   <script src="config.js"></script>
+  <script src="checkin-run-state.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>
