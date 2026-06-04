@@ -745,8 +745,14 @@ async function checkInFromOfficialPage(site, tabSession = null) {
       }
 
       function hasCheckedInText() {
-        const text = document.body?.innerText || '';
-        return matchesAlreadyCheckedText(text);
+        const candidates = Array.from(document.querySelectorAll('button, [role="button"], a, input[type="button"], input[type="submit"], [tabindex]:not([tabindex="-1"]), [onclick], [class*="cursor-pointer"], [data-slot="button"], [class*="status"], [class*="tag"], [class*="badge"], span, p, div'));
+        return candidates.some((el) => {
+          const text = getCandidateText(el).replace(/\s+/g, ' ').trim();
+          return text &&
+            text.length <= 80 &&
+            isVisible(el) &&
+            matchesAlreadyCheckedText(text);
+        });
       }
 
       function isDisabledCandidate(el) {
@@ -918,11 +924,9 @@ async function checkInFromOfficialPage(site, tabSession = null) {
   }
 
   if (pageResult.kind === 'response' && pageResult.data) {
-    const parsed = parseCheckInResponse(pageResult.data, pageResult.httpStatus, false);
+    let parsed = parseCheckInResponse(pageResult.data, pageResult.httpStatus, false);
     if (parsed.alreadyCheckedIn && pageResult.clickedText) {
-      parsed.success = true;
-      parsed.alreadyCheckedIn = false;
-      parsed.message = `签到成功: ${pageResult.clickedText}`;
+      parsed = markOfficialPageClickSuccess(parsed, pageResult.clickedText);
     }
     if (parsed.requiresPageExecution) {
       parsed.message = '站点仍要求页面内操作，自动签到已停止';
@@ -956,7 +960,8 @@ async function checkInFromOfficialPage(site, tabSession = null) {
         alreadyCheckedIn: false,
         message: pageResult.message || '签到成功',
         httpStatus: 200,
-        data: pageResult
+        data: pageResult,
+        fallbackClicked: true
       }),
       tabId: tab.id,
       keepTabOpen: false
@@ -1114,6 +1119,9 @@ function formatResult(execResult) {
   }
   if (execResult.error) {
     return { status: 'failed', message: execResult.error };
+  }
+  if (execResult.fallbackClicked && execResult.success) {
+    return { status: 'success', message: execResult.message };
   }
   if (execResult.alreadyCheckedIn) {
     return { status: 'already', message: execResult.message };

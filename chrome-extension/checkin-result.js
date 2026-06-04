@@ -52,13 +52,26 @@
     return Boolean(result && !result.success && !result.alreadyCheckedIn && !result.invalidSite);
   }
 
+  function markOfficialPageClickSuccess(result, clickedText) {
+    if (!result || !clickedText) return result;
+    return {
+      ...result,
+      success: true,
+      alreadyCheckedIn: false,
+      message: `签到成功: ${clickedText}`,
+      fallbackClicked: true
+    };
+  }
+
   root.parseCheckInResponse = parseCheckInResponse;
   root.shouldTryOfficialPageCheckIn = shouldTryOfficialPageCheckIn;
+  root.markOfficialPageClickSuccess = markOfficialPageClickSuccess;
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
       parseCheckInResponse,
-      shouldTryOfficialPageCheckIn
+      shouldTryOfficialPageCheckIn,
+      markOfficialPageClickSuccess
     };
   }
 })(typeof globalThis !== 'undefined' ? globalThis : this);
