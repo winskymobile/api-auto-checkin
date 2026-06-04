@@ -137,6 +137,9 @@ async function renderSites(results, { preserveScroll = false } = {}) {
       const view = getStatusView(result.status);
       status.classList.add(view.className);
       status.textContent = view.text;
+      if (result.message) {
+        status.title = result.message;
+      }
     } else {
       status.classList.add('pending');
       status.textContent = enabled ? '待签' : '禁用';
