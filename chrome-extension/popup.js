@@ -131,13 +131,20 @@ async function renderSites(results, { preserveScroll = false } = {}) {
     name.addEventListener('click', () => openSitePage(site));
 
     // 状态
-    const status = document.createElement('span');
+    const canRetry = enabled && canRetrySiteStatus(result?.status);
+    const status = document.createElement(canRetry ? 'button' : 'span');
     status.className = 'site-status';
+    if (canRetry) {
+      status.type = 'button';
+      status.classList.add('retryable');
+      status.title = result?.message ? `${result.message}，点击重试` : '点击签到该站点';
+      status.addEventListener('click', () => handleRetrySite(siteId));
+    }
     if (result) {
       const view = getStatusView(result.status);
       status.classList.add(view.className);
       status.textContent = view.text;
-      if (result.message) {
+      if (result.message && !canRetry) {
         status.title = result.message;
       }
     } else {
@@ -203,6 +210,10 @@ function getStatusView(status) {
   if (status === 'checking') return { className: 'checking', text: '签到中' };
   if (status === 'invalid') return { className: 'invalid', text: '失效' };
   return { className: 'failed', text: '失败' };
+}
+
+function canRetrySiteStatus(status) {
+  return !status || status === 'failed' || status === 'invalid';
 }
 
 // 添加站点
@@ -311,6 +322,34 @@ async function handleManualCheckIn() {
     const data = await chrome.storage.local.get('checkInRunState');
     currentRunState = getCheckInRunState(data);
     await updateCheckInButtonState();
+  }
+}
+
+async function handleRetrySite(siteId) {
+  if (!siteId || isCheckInRunningState(currentRunState)) return;
+
+  const data = await chrome.storage.local.get('checkInResults');
+  const currentResults = data.checkInResults || {};
+  const checkingResults = markSiteChecking(currentResults, siteId);
+  updateStats(checkingResults);
+  renderSites(checkingResults, { preserveScroll: true });
+
+  try {
+    const response = await new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage({ action: 'retrySiteCheckIn', siteId }, (response) => {
+        if (response?.success) resolve(response);
+        else reject(new Error(response?.error || '重试失败'));
+      });
+    });
+
+    updateStats(response.results || {});
+    renderSites(response.results || {}, { preserveScroll: true });
+    if (!response.running) {
+      document.getElementById('lastCheck').textContent = `上次签到: ${formatDateTime(new Date())}`;
+    }
+  } catch (error) {
+    alert('重试失败: ' + error.message);
+    loadStatus();
   }
 }
 

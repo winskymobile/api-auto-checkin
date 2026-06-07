@@ -50,6 +50,27 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
+  if (request.action === 'retrySiteCheckIn') {
+    if (currentCheckInPromise) {
+      chrome.storage.local.get(['checkInResults', 'checkInRunState'], (data) => {
+        sendResponse({
+          success: false,
+          running: true,
+          results: data.checkInResults || {},
+          runState: getCheckInRunState(data),
+          error: '已有签到任务正在执行'
+        });
+      });
+    } else {
+      startSingleSiteCheckInRun(request.siteId).then(results => {
+        sendResponse({ success: true, running: false, results });
+      }).catch(error => {
+        sendResponse({ success: false, error: error.message });
+      });
+    }
+    return true;
+  }
+
   if (request.action === 'getStatus') {
     chrome.storage.local.get(['lastCheckInTime', 'checkInResults', 'checkInRunState', 'autoSignTime'], (data) => {
       sendResponse({
@@ -86,6 +107,18 @@ function startCheckInRun(source = 'manual') {
   }
 
   currentCheckInPromise = executeAllCheckIns({ source }).finally(() => {
+    currentCheckInPromise = null;
+  });
+  return currentCheckInPromise;
+}
+
+function startSingleSiteCheckInRun(siteId) {
+  if (currentCheckInPromise) {
+    console.log('已有签到任务正在执行，跳过单站重试');
+    return currentCheckInPromise;
+  }
+
+  currentCheckInPromise = executeSingleSiteCheckIn(siteId).finally(() => {
     currentCheckInPromise = null;
   });
   return currentCheckInPromise;
@@ -182,6 +215,66 @@ async function executeAllCheckIns({ source = 'manual' } = {}) {
   }, 5000);
 
   return results;
+}
+
+async function executeSingleSiteCheckIn(siteId) {
+  if (!siteId) throw new Error('缺少站点 ID');
+
+  const sites = await loadSitesConfig();
+  const site = sites.find(item => item.siteId === siteId);
+  if (!site) throw new Error('未找到要重试的站点');
+  if (!site.enabled) throw new Error('站点已禁用，请启用后重试');
+
+  const startedRunState = buildCheckInRunningState({
+    total: 1,
+    current: 1,
+    currentSiteId: siteId,
+    source: 'retry'
+  });
+  const { checkInResults: previousResults = {} } = await chrome.storage.local.get('checkInResults');
+  const baseResults = normalizeCheckInResultsForRun(previousResults);
+
+  await chrome.storage.local.set({
+    checkInRunState: startedRunState,
+    checkInResults: markSiteChecking(baseResults, siteId)
+  });
+
+  const tabSession = createSiteTabSession();
+  let result;
+  try {
+    let resolvedSite = site.mode === 'visit' ? site : await resolveSiteType(site, tabSession);
+    resolvedSite = await maybeUpdateSiteName(resolvedSite, tabSession);
+    result = resolvedSite.mode === 'visit'
+      ? await visitSite(resolvedSite, tabSession)
+      : await checkInSite(resolvedSite, tabSession);
+    console.log(`${resolvedSite.siteName} 单站重试结果:`, result);
+  } catch (error) {
+    console.error(`${site.siteName} 单站重试失败:`, error);
+    if (isInvalidSiteError(error)) {
+      result = createInvalidSiteResult(error);
+    } else {
+      result = {
+        status: 'failed',
+        message: error.message
+      };
+    }
+  } finally {
+    await tabSession.close();
+  }
+
+  const { checkInResults: latestResults = {} } = await chrome.storage.local.get('checkInResults');
+  const nextResults = {
+    ...normalizeCheckInResultsForRun(latestResults),
+    [siteId]: result
+  };
+
+  await chrome.storage.local.set({
+    checkInResults: nextResults,
+    checkInRunState: clearCheckInRunningState(startedRunState),
+    lastCheckInTime: new Date().toISOString()
+  });
+
+  return nextResults;
 }
 
 async function maybeUpdateSiteName(site, tabSession = null) {
@@ -714,6 +807,10 @@ async function checkInFromOfficialPage(site, tabSession = null) {
         };
       }
 
+      const pollIntervalMs = 500;
+      const regularWaitLoops = 40;
+      const securityCheckWaitLoops = 180;
+
       function isVisible(el) {
         const style = window.getComputedStyle(el);
         const rect = el.getBoundingClientRect();
@@ -725,8 +822,21 @@ async function checkInFromOfficialPage(site, tabSession = null) {
 
       function hasSecurityCheck() {
         const text = document.body?.innerText || '';
-        return /Security Check|安全验证|人机验证|Turnstile/i.test(text) ||
-          Boolean(document.querySelector('iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"]'));
+        return /Security Check|安全验证|人机验证|Turnstile|captcha|验证码|请完成验证|verify you are human/i.test(text) ||
+          Boolean(document.querySelector([
+            'iframe[src*="challenges.cloudflare.com"]',
+            'iframe[src*="turnstile"]',
+            'iframe[src*="google.com/recaptcha"]',
+            'iframe[src*="recaptcha.net/recaptcha"]',
+            'iframe[src*="hcaptcha.com"]',
+            '.cf-turnstile',
+            '.g-recaptcha',
+            '.h-captcha',
+            '[data-sitekey]',
+            'input[name="cf-turnstile-response"]',
+            'textarea[name="g-recaptcha-response"]',
+            'textarea[name="h-captcha-response"]'
+          ].join(', ')));
       }
 
       function getCandidateText(el) {
@@ -741,18 +851,26 @@ async function checkInFromOfficialPage(site, tabSession = null) {
       }
 
       function matchesAlreadyCheckedText(text) {
-        return /Checked in|already checked|already signed|已签到|已签|已签过|今日已签|今日已签到|已经签到|重复签到/i.test(text);
+        const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+        if (!normalized || normalized.length > 40) return false;
+        return /^(Checked in|Already checked|Already signed|已签到|已签|已签过|今日已签|今日已签到|今天已签|今天已签到|已经签到)$/i.test(normalized) ||
+          /^(今日|今天).{0,12}(已签到|已签|已签过|已经签到)$/i.test(normalized) ||
+          /^(Checked in|Already checked|Already signed).{0,16}today$/i.test(normalized);
       }
 
-      function hasCheckedInText() {
-        const candidates = Array.from(document.querySelectorAll('button, [role="button"], a, input[type="button"], input[type="submit"], [tabindex]:not([tabindex="-1"]), [onclick], [class*="cursor-pointer"], [data-slot="button"], [class*="status"], [class*="tag"], [class*="badge"], span, p, div'));
-        return candidates.some((el) => {
+      function findCheckedInStateText() {
+        const candidates = Array.from(document.querySelectorAll('button, [role="button"], [role="status"], [aria-live], a, input[type="button"], input[type="submit"], [tabindex]:not([tabindex="-1"]), [onclick], [class*="cursor-pointer"], [data-slot="button"], [class*="status"], [class*="tag"], [class*="badge"], [class*="checked"], [class*="signed"], [class*="success"], span, p'));
+        const found = candidates.find((el) => {
           const text = getCandidateText(el).replace(/\s+/g, ' ').trim();
           return text &&
-            text.length <= 80 &&
             isVisible(el) &&
             matchesAlreadyCheckedText(text);
         });
+        return found ? getCandidateText(found).replace(/\s+/g, ' ').trim() : '';
+      }
+
+      function hasCheckedInText() {
+        return Boolean(findCheckedInStateText());
       }
 
       function isDisabledCandidate(el) {
@@ -839,9 +957,11 @@ async function checkInFromOfficialPage(site, tabSession = null) {
       try {
         let button = null;
         let clickedText = '';
-        for (let i = 0; i < 40; i++) {
-          if (hasCheckedInText()) {
-            return { kind: 'already', message: '今日已签到' };
+        let securityCheckSeen = false;
+        for (let i = 0; i < (securityCheckSeen ? securityCheckWaitLoops : regularWaitLoops); i++) {
+          const checkedInStateText = findCheckedInStateText();
+          if (checkedInStateText) {
+            return { kind: 'already', message: `今日已签到: ${checkedInStateText}` };
           }
           if (hasDisabledCheckInButton()) {
             return { kind: 'already', message: '今日已签到' };
@@ -849,12 +969,9 @@ async function checkInFromOfficialPage(site, tabSession = null) {
           button = findCheckInButton();
           if (button) break;
           if (hasSecurityCheck()) {
-            return {
-              kind: 'security-check',
-              message: '站点要求完成 Turnstile 安全验证，自动签到已停止'
-            };
+            securityCheckSeen = true;
           }
-          await new Promise(resolve => setTimeout(resolve, 500));
+          await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
         }
 
         if (!button) {
@@ -862,7 +979,7 @@ async function checkInFromOfficialPage(site, tabSession = null) {
           return {
             kind: hasSecurityCheck() ? 'security-check' : 'no-button',
             message: hasSecurityCheck()
-              ? '站点要求完成 Turnstile 安全验证，自动签到已停止'
+              ? '站点要求完成人机验证，等待超时，自动签到已停止'
               : candidates
                 ? `未找到官方页面签到按钮，页面候选: ${candidates}`
                 : '未找到官方页面签到按钮，自动签到失败',
@@ -875,16 +992,14 @@ async function checkInFromOfficialPage(site, tabSession = null) {
         clickedText = getCandidateText(button).replace(/\s+/g, ' ').trim().slice(0, 80);
         button.click();
 
-        for (let i = 0; i < 40; i++) {
-          await new Promise(resolve => setTimeout(resolve, 500));
+        for (let i = 0; i < (securityCheckSeen ? securityCheckWaitLoops : regularWaitLoops); i++) {
+          await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
           if (checkInResponses.length > 0) {
             return { kind: 'response', clickedText, ...checkInResponses[checkInResponses.length - 1] };
           }
           if (hasSecurityCheck()) {
-            return {
-              kind: 'security-check',
-              message: '站点要求完成 Turnstile 安全验证，自动签到已停止'
-            };
+            securityCheckSeen = true;
+            continue;
           }
           if (hasCheckedInText()) {
             return {
@@ -896,8 +1011,10 @@ async function checkInFromOfficialPage(site, tabSession = null) {
         }
 
         return {
-          kind: 'timeout',
-          message: clickedText
+          kind: securityCheckSeen ? 'security-check' : 'timeout',
+          message: securityCheckSeen
+            ? '站点要求完成人机验证，等待超时，自动签到已停止'
+            : clickedText
             ? `官方页面已点击「${clickedText}」，但未捕获到签到结果`
             : '官方页面签到请求超时，自动签到失败',
           clickedText,

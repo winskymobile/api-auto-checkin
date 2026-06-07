@@ -255,10 +255,21 @@
     }
     .site-status {
       padding: 3px 10px;
+      border: none;
       border-radius: 10px;
       font-size: 10px;
       font-weight: bold;
       flex-shrink: 0;
+    }
+    .site-status.retryable {
+      cursor: pointer;
+    }
+    .site-status.retryable:hover {
+      filter: brightness(0.96);
+    }
+    .site-status.retryable:focus-visible {
+      outline: 2px solid var(--focus-outline);
+      outline-offset: 2px;
     }
     .site-status.success { background: var(--success-bg); color: var(--success-text); }
     .site-status.already { background: var(--info-bg); color: var(--info-text); }
