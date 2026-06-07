@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "公益站自动签到助手",
-  "version": "1.14",
+  "version": "1.20",
   "description": "支持NewAPI、Sub2API等多类型站点的公益站自动签到工具",
   "permissions": [
     "cookies",
