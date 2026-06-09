@@ -942,7 +942,11 @@ async function checkInFromOfficialPage(site, tabSession = null) {
         return 4;
       }
 
-      function findCheckInButton() {
+      function isImmediateCheckInText(text) {
+        return getCheckInTextPriority(text) === 0;
+      }
+
+      function findCheckInButton({ immediateOnly = false } = {}) {
         const clickableSelector = [
           'button',
           '[role="button"]',
@@ -970,6 +974,7 @@ async function checkInFromOfficialPage(site, tabSession = null) {
             !isDisabledCandidate(el) &&
             isVisible(el) &&
             matchesCheckInText(text) &&
+            (!immediateOnly || isImmediateCheckInText(text)) &&
             !isNonUserCheckInControl(text) &&
             !matchesAlreadyCheckedText(text))
           .sort((a, b) => getCheckInTextPriority(a.text) - getCheckInTextPriority(b.text) || a.index - b.index)[0]?.el || null;
@@ -1005,6 +1010,9 @@ async function checkInFromOfficialPage(site, tabSession = null) {
         let clickedText = '';
         let securityCheckSeen = false;
         for (let i = 0; i < (securityCheckSeen ? securityCheckWaitLoops : regularWaitLoops); i++) {
+          button = findCheckInButton({ immediateOnly: true });
+          if (button) break;
+
           const checkedInStateText = findCheckedInStateText();
           if (checkedInStateText) {
             return { kind: 'already', message: `今日已签到: ${checkedInStateText}` };
