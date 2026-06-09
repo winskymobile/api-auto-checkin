@@ -112,6 +112,7 @@ async function renderSites(results, { preserveScroll = false } = {}) {
 
     const item = document.createElement('div');
     item.className = 'site-item';
+    item.dataset.domain = site.domain;
     if (!enabled) item.style.opacity = '0.5';
 
     // 开关
@@ -423,12 +424,17 @@ function setAutoSignTimeDisplay(time) {
 // 导出配置
 async function handleExport() {
   const sites = await loadRawSites();
+  const exportOrder = getCurrentSiteListOrder();
+  const displayNamesByDomain = getCurrentSiteDisplayNamesByDomain();
   const { autoSignTime } = await chrome.storage.local.get('autoSignTime');
   const currentAutoSignTime = isValidAutoSignTime(autoSignTime)
     ? autoSignTime
     : document.getElementById('autoSignTime').value;
 
-  const config = buildExportConfig(sites, currentAutoSignTime);
+  const config = buildExportConfig(sites, currentAutoSignTime, {
+    orderedDomains: exportOrder,
+    displayNamesByDomain
+  });
 
   const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -437,6 +443,23 @@ async function handleExport() {
   a.download = `checkin-sites-${Date.now()}.json`;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+function getCurrentSiteListOrder() {
+  return Array.from(document.querySelectorAll('#sitesList .site-item'))
+    .map(item => item.dataset.domain)
+    .filter(Boolean);
+}
+
+function getCurrentSiteDisplayNamesByDomain() {
+  const names = {};
+  for (const item of document.querySelectorAll('#sitesList .site-item')) {
+    const domain = item.dataset.domain;
+    if (!domain) continue;
+    const name = item.querySelector('.site-name')?.textContent?.trim();
+    if (name) names[domain] = name;
+  }
+  return names;
 }
 
 // 导入配置

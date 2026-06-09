@@ -1,6 +1,39 @@
 (function(root) {
-  function buildExportConfig(sites, autoSignTime) {
-    const config = { sites };
+  function normalizeExportSites(sites, { orderedDomains = [], displayNamesByDomain = {} } = {}) {
+    if (!Array.isArray(sites)) return [];
+
+    const byDomain = new Map();
+    const normalizedSites = [];
+    for (const site of sites) {
+      const domain = String(site?.domain || '').trim().toLowerCase();
+      if (!domain || byDomain.has(domain)) continue;
+
+      const displayName = String(displayNamesByDomain[domain] || '').trim();
+      const name = displayName || String(site?.name || '').trim() || domain;
+      const normalized = { ...site, domain, name };
+      byDomain.set(domain, normalized);
+      normalizedSites.push(normalized);
+    }
+
+    const ordered = [];
+    const used = new Set();
+    for (const domain of orderedDomains) {
+      const normalizedDomain = String(domain || '').trim().toLowerCase();
+      if (!normalizedDomain || used.has(normalizedDomain) || !byDomain.has(normalizedDomain)) continue;
+      ordered.push(byDomain.get(normalizedDomain));
+      used.add(normalizedDomain);
+    }
+
+    for (const site of normalizedSites) {
+      if (used.has(site.domain)) continue;
+      ordered.push(site);
+    }
+
+    return ordered;
+  }
+
+  function buildExportConfig(sites, autoSignTime, exportOptions = {}) {
+    const config = { sites: normalizeExportSites(sites, exportOptions) };
     if (typeof root.isValidAutoSignTime === 'function' && root.isValidAutoSignTime(autoSignTime)) {
       config.autoSignTime = autoSignTime;
     }
@@ -43,6 +76,7 @@
   root.buildImportSites = buildImportSites;
   root.getImportAutoSignTime = getImportAutoSignTime;
   root.normalizeImportSites = normalizeImportSites;
+  root.normalizeExportSites = normalizeExportSites;
 
   if (typeof module !== 'undefined' && module.exports) {
     const { isValidAutoSignTime } = require('./schedule.js');
@@ -51,6 +85,7 @@
       buildExportConfig,
       buildImportSites,
       getImportAutoSignTime,
+      normalizeExportSites,
       normalizeImportSites
     };
   }
