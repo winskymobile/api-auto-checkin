@@ -7,6 +7,35 @@
     return Boolean(session?.userAuthenticated || session?.hasUser);
   }
 
+  function buildNewApiLinuxDoOAuthUrl(clientId, state) {
+    const params = new URLSearchParams({
+      response_type: 'code',
+      client_id: clientId,
+      state
+    });
+    return `https://connect.linux.do/oauth2/authorize?${params.toString()}`;
+  }
+
+  function isNewApiOAuthCallbackUrl(url) {
+    try {
+      const parsed = new URL(url || '');
+      return parsed.searchParams.has('code');
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function isNewApiTargetLoginPage(url, domain) {
+    try {
+      const parsed = new URL(url || '');
+      return parsed.hostname === domain &&
+        /^\/login(?:\/|$)/i.test(parsed.pathname) &&
+        !isNewApiOAuthCallbackUrl(url);
+    } catch (e) {
+      return false;
+    }
+  }
+
   function parseNewApiUserId(user) {
     if (!user) return null;
     let parsed = user;
@@ -46,16 +75,20 @@
   }
 
   root.buildNewApiExistingSessionHeaders = buildNewApiExistingSessionHeaders;
+  root.buildNewApiLinuxDoOAuthUrl = buildNewApiLinuxDoOAuthUrl;
   root.getNewApiPostLoginUrl = getNewApiPostLoginUrl;
   root.hasNewApiUserSession = hasNewApiUserSession;
+  root.isNewApiTargetLoginPage = isNewApiTargetLoginPage;
   root.parseNewApiUserId = parseNewApiUserId;
   root.shouldTryNewApiOAuth = shouldTryNewApiOAuth;
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
       buildNewApiExistingSessionHeaders,
+      buildNewApiLinuxDoOAuthUrl,
       getNewApiPostLoginUrl,
       hasNewApiUserSession,
+      isNewApiTargetLoginPage,
       parseNewApiUserId,
       shouldTryNewApiOAuth
     };

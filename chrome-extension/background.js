@@ -1243,12 +1243,7 @@ async function autoZenApiOAuthLogin(domain, tabId = null) {
 }
 
 function isTargetDomainLoginPage(url, domain) {
-  try {
-    const parsed = new URL(url || '');
-    return parsed.hostname === domain && /^\/login(?:\/|$)/i.test(parsed.pathname);
-  } catch (e) {
-    return false;
-  }
+  return isNewApiTargetLoginPage(url, domain);
 }
 
 function hasSub2ApiUsableAuth(headers) {
@@ -1420,6 +1415,254 @@ async function clickSiteLinuxDoLoginButton(tabId, logLabel = 'OAuth') {
   } catch (e) {
     console.warn(`[${logLabel}] 点击站点 Linux.do 登录入口失败:`, e);
     return false;
+  }
+}
+
+async function getOpenTabIds() {
+  try {
+    const tabs = await chrome.tabs.query({});
+    return new Set(tabs.map(tab => tab.id).filter(Boolean));
+  } catch (e) {
+    return new Set();
+  }
+}
+
+async function waitForNewLinuxDoTab(knownTabIds, timeout = 10000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeout) {
+    try {
+      const tabs = await chrome.tabs.query({});
+      const tab = tabs.find(candidate => {
+        const url = candidate.url || candidate.pendingUrl || '';
+        return candidate.id &&
+          !knownTabIds.has(candidate.id) &&
+          url.includes('connect.linux.do');
+      });
+      if (tab?.id) return tab;
+    } catch (e) {
+      return null;
+    }
+    await sleep(500);
+  }
+  return null;
+}
+
+async function startSiteLinuxDoOAuthFromLoginPage(tabId, domain, readyUrl, logLabel = 'OAuth') {
+  const knownTabIds = await getOpenTabIds();
+  const startedAt = Date.now();
+  let activeTabId = tabId;
+  let lastUrl = '';
+
+  while (Date.now() - startedAt < 20000) {
+    let tabInfo;
+    try {
+      tabInfo = await chrome.tabs.get(activeTabId);
+      lastUrl = tabInfo.url || lastUrl;
+    } catch (e) {
+      return null;
+    }
+
+    if (lastUrl.includes('connect.linux.do')) {
+      await clickLinuxDoAuthorizeButton(activeTabId);
+      const redirected = await waitForTabUrlMatch(activeTabId, domain, 30000);
+      if (!redirected) {
+        console.warn(`[${logLabel}] 等待回跳目标站点超时`);
+        return null;
+      }
+      await ensureTabPageReady(activeTabId, readyUrl || `https://${domain}/`, 20000);
+      await sleep(1000);
+      return { tabId: activeTabId };
+    }
+
+    if (lastUrl.includes(domain) && !isTargetDomainLoginPage(lastUrl, domain)) {
+      return { tabId: activeTabId };
+    }
+
+    if (!isTargetDomainLoginPage(lastUrl, domain)) {
+      await chrome.tabs.update(activeTabId, { url: `https://${domain}/login`, active: false });
+      await ensureTabPageReady(activeTabId, `https://${domain}/login`, 20000);
+      await sleep(1000);
+      continue;
+    }
+
+    const clicked = await clickSiteLinuxDoLoginButton(activeTabId, logLabel);
+    if (!clicked) {
+      await sleep(500);
+      continue;
+    }
+
+    await sleep(1000);
+    const newLinuxDoTab = await waitForNewLinuxDoTab(knownTabIds, 3000);
+    if (newLinuxDoTab?.id) {
+      if (newLinuxDoTab.active) {
+        await chrome.tabs.update(newLinuxDoTab.id, { active: false }).catch(() => {});
+      }
+      if (activeTabId !== newLinuxDoTab.id) {
+        await closeTabQuietly(activeTabId);
+      }
+      activeTabId = newLinuxDoTab.id;
+      continue;
+    }
+
+    await waitForTabUrlChange(activeTabId, lastUrl, 10000);
+    await waitForTabComplete(activeTabId, 20000);
+    await waitForUsableTabPage(activeTabId, 20000);
+  }
+
+  console.warn(`[${logLabel}] 未能从登录页启动 linux.do OAuth`);
+  return null;
+}
+
+async function processNewApiOAuthCallback(tabId, logLabel = 'OAuth') {
+  let tabInfo;
+  try {
+    tabInfo = await chrome.tabs.get(tabId);
+  } catch (e) {
+    console.warn(`[${logLabel}] 读取 OAuth 回调页面失败:`, e);
+    return null;
+  }
+
+  let code = null;
+  try {
+    const oauthUrl = new URL(tabInfo.url || '');
+    code = oauthUrl.searchParams.get('code');
+  } catch (e) {
+    return null;
+  }
+
+  if (!code) return null;
+
+  console.log(`[${logLabel}] 手动调用 OAuth 回调 API...`);
+  try {
+    const callbackResults = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: async (authCode) => {
+        try {
+          const resp = await fetch(`/api/oauth/linuxdo?code=${authCode}`, {
+            method: 'GET',
+            credentials: 'include'
+          });
+          const data = await resp.json();
+          console.log('[OAuth 回调] API 响应:', data);
+
+          if (data.success && data.data) {
+            localStorage.setItem('user', JSON.stringify(data.data));
+            console.log('[OAuth 回调] 已将用户数据写入 localStorage');
+          }
+
+          await new Promise(r => setTimeout(r, 1000));
+
+          const hasUser = localStorage.getItem('user') !== null;
+          return { success: true, apiResponse: data, hasUser };
+        } catch (e) {
+          return { success: false, error: e.message };
+        }
+      },
+      args: [code]
+    });
+    const callbackResult = callbackResults[0]?.result;
+    console.log(`[${logLabel}] 回调 API 结果:`, JSON.stringify(callbackResult).substring(0, 300));
+    return callbackResult || null;
+  } catch (e) {
+    console.warn(`[${logLabel}] 手动调用回调 API 失败:`, e.message);
+    return null;
+  }
+}
+
+async function buildNewApiLoggedInTabHeaders(domain, visitUrl, tabId, logLabel = 'OAuth') {
+  let tabInfo = await chrome.tabs.get(tabId);
+  if (!tabInfo.url || !tabInfo.url.includes(domain) || isTargetDomainLoginPage(tabInfo.url, domain)) {
+    console.warn(`[${logLabel}] OAuth 后未进入已登录目标页面: ${tabInfo.url}`);
+    return null;
+  }
+
+  await processNewApiOAuthCallback(tabId, logLabel);
+
+  let session = null;
+  for (let retry = 0; retry < 5; retry++) {
+    await sleep(2000);
+    session = await inspectNewApiBrowserSession(tabId);
+    console.log(`[${logLabel}] session 检查 (${retry + 1}/5):`, JSON.stringify({
+      hasUser: session?.hasUser,
+      userAuthenticated: session?.userAuthenticated,
+      selfStatus: session?.selfStatus,
+      hasToken: Boolean(session?.token)
+    }));
+    if (session?.success && hasNewApiUserSession(session)) break;
+
+    tabInfo = await chrome.tabs.get(tabId).catch(() => tabInfo);
+    if (isTargetDomainLoginPage(tabInfo?.url, domain)) {
+      console.warn(`[${logLabel}] session 检查时又回到登录页`);
+      return null;
+    }
+  }
+
+  if (!session?.success || !hasNewApiUserSession(session)) {
+    console.warn(`[${logLabel}] OAuth 后仍未检测到 NewAPI 登录态`);
+    return null;
+  }
+
+  try {
+    await chrome.tabs.reload(tabId);
+    await ensureTabPageReady(tabId, tabInfo.url || `https://${domain}/`, 15000);
+    await sleep(2000);
+  } catch (e) {
+    console.warn(`[${logLabel}] OAuth 后刷新失败，继续捕获认证头:`, e);
+  }
+
+  const postLoginUrl = getNewApiPostLoginUrl(domain, visitUrl);
+  await chrome.tabs.update(tabId, { url: postLoginUrl, active: false });
+  await ensureTabPageReady(tabId, postLoginUrl, 15000);
+  await sleep(2000);
+
+  let headers = await captureAuthHeaders(domain, tabId, { timeout: 8000 });
+  session = await inspectNewApiBrowserSession(tabId);
+  const cookies = await chrome.cookies.getAll({ domain });
+  headers = buildNewApiExistingSessionHeaders({
+    cookies,
+    user: session?.user,
+    token: session?.token,
+    tabId,
+    baseHeaders: headers || {}
+  });
+
+  if (!headers.Cookie && !headers.cookie && !headers.Authorization) {
+    console.warn(`[${logLabel}] 未能构建 NewAPI 认证头`);
+    return null;
+  }
+
+  return { headers, tabId };
+}
+
+async function tryNewApiSiteLoginOAuth(domain, visitUrl, tab, tabSession = null) {
+  if (!tab?.id) return null;
+  try {
+    let tabInfo = await chrome.tabs.get(tab.id);
+    if (!isTargetDomainLoginPage(tabInfo.url, domain)) {
+      await chrome.tabs.update(tab.id, { url: `https://${domain}/login`, active: false });
+      await ensureTabPageReady(tab.id, `https://${domain}/login`, 20000);
+      await sleep(1000);
+      tabInfo = await chrome.tabs.get(tab.id);
+    }
+
+    if (!isTargetDomainLoginPage(tabInfo.url, domain)) {
+      console.warn(`[OAuth] 未进入站点登录页，无法使用页面登录入口: ${tabInfo.url}`);
+      return null;
+    }
+
+    const started = await startSiteLinuxDoOAuthFromLoginPage(
+      tab.id,
+      domain,
+      getNewApiPostLoginUrl(domain, visitUrl),
+      'OAuth'
+    );
+    if (!started?.tabId) return null;
+
+    return await buildNewApiLoggedInTabHeaders(domain, visitUrl, started.tabId, 'OAuth');
+  } catch (e) {
+    console.warn('[OAuth] 站点登录页 OAuth 失败:', e);
+    await closeTabUnlessInSession(tab?.id, tabSession);
+    return null;
   }
 }
 
@@ -2073,6 +2316,14 @@ async function autoOAuthLogin(domain, visitUrl, tabSession = null) {
   // 1. 获取 linuxdo_client_id（在标签页上下文中执行以绕过 Cloudflare）
   let clientId;
   let tab;
+  async function fallbackToSiteLogin(reason) {
+    console.warn(`[OAuth] ${reason}，改用站点登录页 Linux.do 入口`);
+    const fallback = await tryNewApiSiteLoginOAuth(domain, visitUrl, tab, tabSession);
+    if (fallback?.headers) return fallback;
+    await closeTabUnlessInSession(tab?.id, tabSession);
+    return null;
+  }
+
   try {
     // 创建临时后台标签页，避免复用或打断用户正在浏览的页面
     tab = await openSiteSessionTab(tabSession, `https://${domain}/`);
@@ -2094,21 +2345,18 @@ async function autoOAuthLogin(domain, visitUrl, tabSession = null) {
     const result = results[0]?.result;
     if (!result?.success) {
       console.warn(`[OAuth] 获取 status 失败:`, result?.error);
-      await closeTabUnlessInSession(tab.id, tabSession);
-      return null;
+      return await fallbackToSiteLogin('获取 status 失败');
     }
 
     clientId = result.data?.data?.linuxdo_client_id || result.data?.linuxdo_client_id;
     if (!clientId) {
       console.warn(`[OAuth] ${domain} 无 linuxdo_client_id`);
-      await closeTabUnlessInSession(tab.id, tabSession);
-      return null;
+      return await fallbackToSiteLogin('无 linuxdo_client_id');
     }
     console.log(`[OAuth] client_id: ${clientId}`);
   } catch (e) {
     console.warn(`[OAuth] 获取 status 失败:`, e);
-    await closeTabUnlessInSession(tab?.id, tabSession);
-    return null;
+    return await fallbackToSiteLogin('获取 status 异常');
   }
 
   // 2. 检查 linux.do 登录状态
@@ -2139,19 +2387,17 @@ async function autoOAuthLogin(domain, visitUrl, tabSession = null) {
     const result = results[0]?.result;
     if (!result?.success || !result?.data?.success || !result?.data?.data) {
       console.warn('[OAuth] 获取 state 失败:', result);
-      await closeTabUnlessInSession(tab.id, tabSession);
-      return null;
+      return await fallbackToSiteLogin('获取 state 失败');
     }
     state = result.data.data;
     console.log(`[OAuth] 获取 state: ${state}`);
   } catch (e) {
     console.warn('[OAuth] 获取 state 异常:', e);
-    await closeTabUnlessInSession(tab.id, tabSession);
-    return null;
+    return await fallbackToSiteLogin('获取 state 异常');
   }
 
   // 3. 在同一个标签页中打开 OAuth 授权页面
-  const oauthUrl = `https://connect.linux.do/oauth2/authorize?response_type=code&client_id=${clientId}&state=${state}`;
+  const oauthUrl = buildNewApiLinuxDoOAuthUrl(clientId, state);
   console.log(`[OAuth] 打开: ${oauthUrl}`);
   try {
     await chrome.tabs.update(tab.id, { url: oauthUrl });
@@ -2210,18 +2456,23 @@ async function autoOAuthLogin(domain, visitUrl, tabSession = null) {
       const redirected = await waitForTabUrlMatch(tab.id, domain, 20000);
       if (!redirected) {
         console.warn('[OAuth] 重定向超时');
-        await closeTabUnlessInSession(tab.id, tabSession);
-        return null;
+        return await fallbackToSiteLogin('OAuth 重定向超时');
       }
       await ensureTabPageReady(tab.id, `https://${domain}/`, 15000);
+      tabInfo = await chrome.tabs.get(tab.id);
+      if (isTargetDomainLoginPage(tabInfo.url, domain)) {
+        return await fallbackToSiteLogin('OAuth 回跳后进入登录页');
+      }
     }
 
     // 6. 验证已到达目标域名
     tabInfo = await chrome.tabs.get(tab.id);
     if (!tabInfo.url || !tabInfo.url.includes(domain)) {
       console.warn(`[OAuth] 未到达目标域: ${tabInfo.url}`);
-      await closeTabUnlessInSession(tab.id, tabSession);
-      return null;
+      return await fallbackToSiteLogin('OAuth 未到达目标域');
+    }
+    if (isTargetDomainLoginPage(tabInfo.url, domain)) {
+      return await fallbackToSiteLogin('OAuth 停在登录页');
     }
     console.log(`[OAuth] 登录完成: ${tabInfo.url}`);
 
@@ -2229,47 +2480,7 @@ async function autoOAuthLogin(domain, visitUrl, tabSession = null) {
     console.log('[OAuth] 等待前端处理 OAuth 回调...');
 
     // 7.5. 手动触发 OAuth 回调处理（某些站点的前端 JS 可能不会自动执行）
-    console.log('[OAuth] 手动调用 OAuth 回调 API...');
-    const oauthUrl = new URL(tabInfo.url);
-    const code = oauthUrl.searchParams.get('code');
-    if (code) {
-      try {
-        const callbackResults = await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          func: async (authCode) => {
-            try {
-              // 手动调用 OAuth 回调 API
-              const resp = await fetch(`/api/oauth/linuxdo?code=${authCode}`, {
-                method: 'GET',
-                credentials: 'include'
-              });
-              const data = await resp.json();
-              console.log('[OAuth 回调] API 响应:', data);
-
-              // 如果登录成功,将用户数据写入 localStorage
-              if (data.success && data.data) {
-                localStorage.setItem('user', JSON.stringify(data.data));
-                console.log('[OAuth 回调] 已将用户数据写入 localStorage');
-              }
-
-              // 等待一下让浏览器处理 Set-Cookie
-              await new Promise(r => setTimeout(r, 1000));
-
-              // 检查 localStorage
-              const hasUser = localStorage.getItem('user') !== null;
-              return { success: true, apiResponse: data, hasUser: hasUser };
-            } catch (e) {
-              return { success: false, error: e.message };
-            }
-          },
-          args: [code]
-        });
-        const callbackResult = callbackResults[0]?.result;
-        console.log('[OAuth] 回调 API 结果:', JSON.stringify(callbackResult).substring(0, 300));
-      } catch (e) {
-        console.warn('[OAuth] 手动调用回调 API 失败:', e.message);
-      }
-    }
+    await processNewApiOAuthCallback(tab.id, 'OAuth');
 
     // 7.6. 验证 session 是否已建立（在页面上下文中检查）
     let sessionEstablished = false;
@@ -2278,6 +2489,11 @@ async function autoOAuthLogin(domain, visitUrl, tabSession = null) {
       console.log(`[OAuth] 验证 session 是否建立 (尝试 ${retry + 1}/5)...`);
 
       try {
+        const currentTab = await chrome.tabs.get(tab.id);
+        if (isTargetDomainLoginPage(currentTab.url, domain)) {
+          return await fallbackToSiteLogin('验证 session 时进入登录页');
+        }
+
         const results = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           func: async () => {
@@ -2335,8 +2551,7 @@ async function autoOAuthLogin(domain, visitUrl, tabSession = null) {
 
     if (!sessionEstablished) {
       console.warn('[OAuth] session 未建立，OAuth 可能失败');
-      await closeTabUnlessInSession(tab.id, tabSession);
-      return null;
+      return await fallbackToSiteLogin('session 未建立');
     }
 
     // 7.6. 在 OAuth 回调页面刷新，强制浏览器写入新 cookie
