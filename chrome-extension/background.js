@@ -4,6 +4,8 @@ importScripts('schedule.js', 'config.js', 'auth-headers.js', 'checkin-result.js'
 const DAILY_CHECK_IN_ALARM = 'dailyCheckIn';
 const PAGE_USABLE_TIMEOUT_MS = 20000;
 let currentCheckInPromise = null;
+let currentCheckInCancelToken = null;
+let currentCheckInContext = null;
 
 // 安装时初始化
 chrome.runtime.onInstalled.addListener(() => {
@@ -72,6 +74,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
+  if (request.action === 'cancelCheckIn') {
+    cancelCurrentCheckInRun().then(response => {
+      sendResponse(response);
+    }).catch(error => {
+      sendResponse({ success: false, error: error.message });
+    });
+    return true;
+  }
+
   if (request.action === 'getStatus') {
     chrome.storage.local.get(['lastCheckInTime', 'checkInResults', 'checkInRunState', 'autoSignTime'], (data) => {
       sendResponse({
@@ -107,7 +118,13 @@ function startCheckInRun(source = 'manual') {
     return currentCheckInPromise;
   }
 
-  currentCheckInPromise = executeAllCheckIns({ source }).finally(() => {
+  const cancelToken = createCheckInCancelToken();
+  const runContext = { cancelToken, tabSession: null };
+  currentCheckInCancelToken = cancelToken;
+  currentCheckInContext = runContext;
+  currentCheckInPromise = executeAllCheckIns({ source, cancelToken, runContext }).finally(() => {
+    if (currentCheckInCancelToken === cancelToken) currentCheckInCancelToken = null;
+    if (currentCheckInContext === runContext) currentCheckInContext = null;
     currentCheckInPromise = null;
   });
   return currentCheckInPromise;
@@ -119,14 +136,78 @@ function startSingleSiteCheckInRun(siteId) {
     return currentCheckInPromise;
   }
 
-  currentCheckInPromise = executeSingleSiteCheckIn(siteId).finally(() => {
+  const cancelToken = createCheckInCancelToken();
+  const runContext = { cancelToken, tabSession: null };
+  currentCheckInCancelToken = cancelToken;
+  currentCheckInContext = runContext;
+  currentCheckInPromise = executeSingleSiteCheckIn(siteId, { cancelToken, runContext }).finally(() => {
+    if (currentCheckInCancelToken === cancelToken) currentCheckInCancelToken = null;
+    if (currentCheckInContext === runContext) currentCheckInContext = null;
     currentCheckInPromise = null;
   });
   return currentCheckInPromise;
 }
 
+function createCheckInCancelToken() {
+  return {
+    requested: false,
+    requestedAt: null
+  };
+}
+
+function isCheckInCancelRequested(cancelToken) {
+  return cancelToken?.requested === true;
+}
+
+function requestCheckInCancel(cancelToken) {
+  if (!cancelToken) return false;
+  cancelToken.requested = true;
+  cancelToken.requestedAt = cancelToken.requestedAt || new Date().toISOString();
+  return true;
+}
+
+async function cancelCurrentCheckInRun() {
+  if (!currentCheckInPromise || !currentCheckInCancelToken) {
+    const data = await chrome.storage.local.get(['checkInResults', 'checkInRunState']);
+    return {
+      success: true,
+      running: false,
+      results: normalizeCheckInResultsForRun(data.checkInResults || {}),
+      runState: getCheckInRunState(data)
+    };
+  }
+
+  const cancelToken = currentCheckInCancelToken;
+  const runContext = currentCheckInContext;
+  requestCheckInCancel(cancelToken);
+  await runContext?.tabSession?.close?.();
+
+  const data = await chrome.storage.local.get(['checkInResults', 'checkInRunState']);
+  const runState = getCheckInRunState(data);
+  const nextRunState = isCheckInRunningState(runState)
+    ? {
+      ...runState,
+      cancelling: true,
+      cancelRequestedAt: cancelToken.requestedAt
+    }
+    : runState;
+  const nextResults = normalizeCheckInResultsForRun(data.checkInResults || {});
+
+  await chrome.storage.local.set({
+    checkInResults: nextResults,
+    checkInRunState: nextRunState
+  });
+
+  return {
+    success: true,
+    running: isCheckInRunningState(nextRunState),
+    results: nextResults,
+    runState: nextRunState
+  };
+}
+
 // 执行所有站点签到
-async function executeAllCheckIns({ source = 'manual' } = {}) {
+async function executeAllCheckIns({ source = 'manual', cancelToken = null, runContext = null } = {}) {
   console.log('开始批量签到');
   const results = {};
   const sites = await loadSitesConfig();
@@ -145,6 +226,11 @@ async function executeAllCheckIns({ source = 'manual' } = {}) {
   chrome.action.setBadgeText({ text: '0/' + total });
 
   for (let site of sites) {
+    if (isCheckInCancelRequested(cancelToken)) {
+      console.log('签到任务已终止，停止处理后续站点');
+      break;
+    }
+
     if (!site.enabled) {
       console.log(`跳过禁用站点: ${site.siteName}`);
       continue;
@@ -163,18 +249,27 @@ async function executeAllCheckIns({ source = 'manual' } = {}) {
     });
 
     const tabSession = createSiteTabSession();
+    if (runContext) runContext.tabSession = tabSession;
     try {
       let resolvedSite = site.mode === 'visit' ? site : await resolveSiteType(site, tabSession);
       resolvedSite = await maybeUpdateSiteName(resolvedSite, tabSession);
+      if (isCheckInCancelRequested(cancelToken)) {
+        results[site.siteId] = { status: 'failed', message: '签到中断' };
+        break;
+      }
       console.log(`开始执行: ${resolvedSite.siteName} (${resolvedSite.mode}/${resolvedSite.type})`);
       const result = resolvedSite.mode === 'visit'
         ? await visitSite(resolvedSite, tabSession)
         : await checkInSite(resolvedSite, tabSession);
-      results[resolvedSite.siteId] = result;
+      results[resolvedSite.siteId] = isCheckInCancelRequested(cancelToken)
+        ? { status: 'failed', message: '签到中断' }
+        : result;
       console.log(`${resolvedSite.siteName} 执行结果:`, result);
     } catch (error) {
       console.error(`${site.siteName} 执行失败:`, error);
-      results[site.siteId] = isInvalidSiteError(error)
+      results[site.siteId] = isCheckInCancelRequested(cancelToken)
+        ? { status: 'failed', message: '签到中断' }
+        : isInvalidSiteError(error)
         ? createInvalidSiteResult(error)
         : {
           status: 'failed',
@@ -182,8 +277,14 @@ async function executeAllCheckIns({ source = 'manual' } = {}) {
         };
     } finally {
       await tabSession.close();
+      if (runContext?.tabSession === tabSession) runContext.tabSession = null;
     }
     await chrome.storage.local.set({ checkInResults: results });
+
+    if (isCheckInCancelRequested(cancelToken)) {
+      console.log('签到任务已终止');
+      break;
+    }
 
     await sleep(2000);
   }
@@ -218,7 +319,7 @@ async function executeAllCheckIns({ source = 'manual' } = {}) {
   return results;
 }
 
-async function executeSingleSiteCheckIn(siteId) {
+async function executeSingleSiteCheckIn(siteId, { cancelToken = null, runContext = null } = {}) {
   if (!siteId) throw new Error('缺少站点 ID');
 
   const sites = await loadSitesConfig();
@@ -241,17 +342,27 @@ async function executeSingleSiteCheckIn(siteId) {
   });
 
   const tabSession = createSiteTabSession();
+  if (runContext) runContext.tabSession = tabSession;
   let result;
   try {
     let resolvedSite = site.mode === 'visit' ? site : await resolveSiteType(site, tabSession);
     resolvedSite = await maybeUpdateSiteName(resolvedSite, tabSession);
-    result = resolvedSite.mode === 'visit'
-      ? await visitSite(resolvedSite, tabSession)
-      : await checkInSite(resolvedSite, tabSession);
+    if (isCheckInCancelRequested(cancelToken)) {
+      result = { status: 'failed', message: '签到中断' };
+    } else {
+      const siteResult = resolvedSite.mode === 'visit'
+        ? await visitSite(resolvedSite, tabSession)
+        : await checkInSite(resolvedSite, tabSession);
+      result = isCheckInCancelRequested(cancelToken)
+        ? { status: 'failed', message: '签到中断' }
+        : siteResult;
+    }
     console.log(`${resolvedSite.siteName} 单站重试结果:`, result);
   } catch (error) {
     console.error(`${site.siteName} 单站重试失败:`, error);
-    if (isInvalidSiteError(error)) {
+    if (isCheckInCancelRequested(cancelToken)) {
+      result = { status: 'failed', message: '签到中断' };
+    } else if (isInvalidSiteError(error)) {
       result = createInvalidSiteResult(error);
     } else {
       result = {
@@ -261,6 +372,7 @@ async function executeSingleSiteCheckIn(siteId) {
     }
   } finally {
     await tabSession.close();
+    if (runContext?.tabSession === tabSession) runContext.tabSession = null;
   }
 
   const { checkInResults: latestResults = {} } = await chrome.storage.local.get('checkInResults');

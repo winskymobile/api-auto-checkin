@@ -295,6 +295,11 @@ function getSiteDisplayName(site) {
 // 手动签到
 async function handleManualCheckIn() {
   const sites = await loadRawSites();
+  if (isCheckInRunningState(currentRunState)) {
+    await cancelCurrentCheckIn(sites);
+    return;
+  }
+
   if (!canStartCheckIn(sites, currentRunState)) {
     updateCheckInButtonState(sites);
     return;
@@ -323,6 +328,37 @@ async function handleManualCheckIn() {
     const data = await chrome.storage.local.get('checkInRunState');
     currentRunState = getCheckInRunState(data);
     await updateCheckInButtonState();
+  }
+}
+
+async function cancelCurrentCheckIn(sites) {
+  const btn = document.getElementById('checkInBtn');
+  const btnText = document.getElementById('btnText');
+  btn.disabled = true;
+  btnText.textContent = '正在终止...';
+  btn.title = '正在终止当前签到任务';
+
+  try {
+    const response = await new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage({ action: 'cancelCheckIn' }, (response) => {
+        if (response?.success) resolve(response);
+        else reject(new Error(response?.error || '终止失败'));
+      });
+    });
+
+    if (response.runState) {
+      currentRunState = getCheckInRunState({ checkInRunState: response.runState });
+    }
+    if (response.results) {
+      updateStats(response.results);
+      renderSites(response.results, { preserveScroll: true });
+    }
+  } catch (error) {
+    alert('终止失败: ' + error.message);
+  } finally {
+    const data = await chrome.storage.local.get('checkInRunState');
+    currentRunState = getCheckInRunState(data);
+    await updateCheckInButtonState(sites);
   }
 }
 
@@ -357,12 +393,19 @@ async function handleRetrySite(siteId) {
 async function updateCheckInButtonState(sites) {
   const currentSites = sites || await loadRawSites();
   const running = isCheckInRunningState(currentRunState);
+  const cancelling = running && currentRunState?.cancelling === true;
   const enabledCount = countEnabledSites(currentSites);
   const btn = document.getElementById('checkInBtn');
   const btnText = document.getElementById('btnText');
-  btn.disabled = !canStartCheckIn(currentSites, currentRunState);
-  btnText.textContent = running ? '签到中...' : '立即签到';
-  btn.title = enabledCount > 0 ? '' : '请先添加并启用至少一个站点';
+  const btnSpinner = document.getElementById('btnSpinner');
+  btn.disabled = cancelling || !canClickCheckInButton(currentSites, currentRunState);
+  btnText.textContent = cancelling ? '正在终止...' : (running ? '签到中，点击终止' : '立即签到');
+  btnSpinner?.classList.toggle('active', running);
+  btn.title = cancelling
+    ? '正在终止当前签到任务'
+    : running
+    ? '点击终止当前签到任务'
+    : (enabledCount > 0 ? '' : '请先添加并启用至少一个站点');
 }
 
 function showLoading() {

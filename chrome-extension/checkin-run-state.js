@@ -35,6 +35,10 @@
     return countEnabledSites(sites) > 0 && !isCheckInRunningState(runState);
   }
 
+  function canClickCheckInButton(sites = [], runState = {}) {
+    return isCheckInRunningState(runState) || canStartCheckIn(sites, runState);
+  }
+
   function markSiteChecking(results = {}, siteId) {
     if (!siteId) return { ...results };
     return {
@@ -75,6 +79,7 @@
   root.getCheckInRunState = getCheckInRunState;
   root.countEnabledSites = countEnabledSites;
   root.canStartCheckIn = canStartCheckIn;
+  root.canClickCheckInButton = canClickCheckInButton;
   root.markSiteChecking = markSiteChecking;
   root.clearResultBalances = clearResultBalances;
   root.normalizeCheckInResultsForRun = normalizeCheckInResultsForRun;
@@ -87,6 +92,7 @@
       getCheckInRunState,
       countEnabledSites,
       canStartCheckIn,
+      canClickCheckInButton,
       markSiteChecking,
       clearResultBalances,
       normalizeCheckInResultsForRun

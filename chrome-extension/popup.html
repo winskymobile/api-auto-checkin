@@ -166,6 +166,26 @@
     }
     .btn-primary:hover { box-shadow: 0 4px 12px var(--primary-shadow); }
     .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
+    .checkin-button-content {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      min-width: 0;
+    }
+    .checkin-button-spinner {
+      display: none;
+      width: 13px;
+      height: 13px;
+      border: 2px solid currentColor;
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      flex-shrink: 0;
+    }
+    .checkin-button-spinner.active {
+      display: inline-block;
+    }
 
     .btn-sm {
       width: auto;
@@ -476,7 +496,10 @@
       </div>
 
       <button class="btn btn-primary" id="checkInBtn" disabled title="请先添加并启用至少一个站点">
-        <span id="btnText">立即签到</span>
+        <span class="checkin-button-content">
+          <span class="checkin-button-spinner" id="btnSpinner" aria-hidden="true"></span>
+          <span id="btnText">立即签到</span>
+        </span>
       </button>
 
       <div class="sites-list" id="sitesList"></div>
