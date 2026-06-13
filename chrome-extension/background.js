@@ -1,5 +1,5 @@
 // 导入配置
-importScripts('schedule.js', 'config.js', 'auth-headers.js', 'checkin-result.js', 'newapi-auth.js', 'zenapi-auth.js', 'tab-options.js', 'site-name.js', 'page-status.js', 'checkin-run-state.js', 'balance.js');
+importScripts('schedule.js', 'config.js', 'auth-headers.js', 'checkin-result.js', 'newapi-auth.js', 'zenapi-auth.js', 'tab-options.js', 'site-name.js', 'page-status.js', 'checkin-run-state.js', 'balance.js', 'extension-storage.js');
 
 const DAILY_CHECK_IN_ALARM = 'dailyCheckIn';
 const PAGE_USABLE_TIMEOUT_MS = 20000;
@@ -12,12 +12,18 @@ chrome.runtime.onInstalled.addListener(() => {
   console.log('公益站自动签到助手已安装');
 
   scheduleDailyCheckIn();
-
-  chrome.storage.local.set({
-    lastCheckInTime: null,
-    checkInResults: {}
+  initializeInstallStorageDefaults().catch((error) => {
+    console.error('初始化签到存储失败:', error);
   });
 });
+
+async function initializeInstallStorageDefaults() {
+  const existingStorage = await chrome.storage.local.get(['lastCheckInTime', 'checkInResults']);
+  const defaults = buildMissingInstallStorageDefaults(existingStorage);
+  if (Object.keys(defaults).length > 0) {
+    await chrome.storage.local.set(defaults);
+  }
+}
 
 chrome.runtime.onStartup.addListener(() => {
   scheduleDailyCheckIn();
