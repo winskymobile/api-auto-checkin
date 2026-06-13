@@ -1,4 +1,5 @@
 let currentRunState = { running: false };
+let latestLastCheckInTime = null;
 let addingSite = false;
 const sitesRenderGuard = createLatestRenderGuard();
 
@@ -38,6 +39,7 @@ function loadStatus() {
   chrome.runtime.sendMessage({ action: 'getStatus' }, (response) => {
     if (response) {
       const results = response.checkInResults || {};
+      latestLastCheckInTime = response.lastCheckInTime || null;
       currentRunState = getCheckInRunState({ checkInRunState: response.checkInRunState });
       updateStats(results);
       renderSites(results);
@@ -70,9 +72,15 @@ function handleStorageChange(changes, areaName) {
     renderSites(undefined, { preserveScroll: true });
   }
 
-  if (changes.lastCheckInTime?.newValue) {
-    document.getElementById('lastCheck').textContent =
-      `上次签到: ${formatDateTime(new Date(changes.lastCheckInTime.newValue))}`;
+  if (changes.lastCheckInTime) {
+    latestLastCheckInTime = changes.lastCheckInTime.newValue || null;
+    if (changes.lastCheckInTime.newValue) {
+      document.getElementById('lastCheck').textContent =
+        `上次签到: ${formatDateTime(new Date(changes.lastCheckInTime.newValue))}`;
+    } else {
+      document.getElementById('lastCheck').textContent = '暂无签到记录';
+    }
+    updateCheckInButtonState();
   }
 }
 
@@ -320,7 +328,10 @@ async function handleManualCheckIn() {
     updateStats(response.results || {});
     renderSites(response.results || {});
     if (!response.running) {
-      document.getElementById('lastCheck').textContent = `上次签到: ${formatDateTime(new Date())}`;
+      latestLastCheckInTime = new Date().toISOString();
+      document.getElementById('lastCheck').textContent =
+        `上次签到: ${formatDateTime(new Date(latestLastCheckInTime))}`;
+      updateCheckInButtonState();
     }
   } catch (error) {
     alert('签到失败: ' + error.message);
@@ -382,7 +393,10 @@ async function handleRetrySite(siteId) {
     updateStats(response.results || {});
     renderSites(response.results || {}, { preserveScroll: true });
     if (!response.running) {
-      document.getElementById('lastCheck').textContent = `上次签到: ${formatDateTime(new Date())}`;
+      latestLastCheckInTime = new Date().toISOString();
+      document.getElementById('lastCheck').textContent =
+        `上次签到: ${formatDateTime(new Date(latestLastCheckInTime))}`;
+      updateCheckInButtonState();
     }
   } catch (error) {
     alert('重试失败: ' + error.message);
@@ -399,7 +413,9 @@ async function updateCheckInButtonState(sites) {
   const btnText = document.getElementById('btnText');
   const btnSpinner = document.getElementById('btnSpinner');
   btn.disabled = cancelling || !canClickCheckInButton(currentSites, currentRunState);
-  btnText.textContent = cancelling ? '正在终止...' : (running ? '签到中，点击终止' : '立即签到');
+  btnText.textContent = cancelling
+    ? '正在终止...'
+    : (running ? '签到中，点击终止' : getIdleCheckInButtonText(latestLastCheckInTime));
   btnSpinner?.classList.toggle('active', running);
   btn.title = cancelling
     ? '正在终止当前签到任务'
