@@ -26,6 +26,26 @@
     return data.checkInRunState || { running: false };
   }
 
+  const DEFAULT_IDLE_CHECK_IN_BUTTON_TEXT = '立即签到';
+  const STALE_IDLE_CHECK_IN_BUTTON_TEXT = '今日未签，立即签到';
+
+  function isSameLocalDate(value, now = new Date()) {
+    const date = value instanceof Date ? value : new Date(value);
+    const referenceDate = now instanceof Date ? now : new Date(now);
+    if (Number.isNaN(date.getTime()) || Number.isNaN(referenceDate.getTime())) return false;
+
+    return date.getFullYear() === referenceDate.getFullYear() &&
+      date.getMonth() === referenceDate.getMonth() &&
+      date.getDate() === referenceDate.getDate();
+  }
+
+  function getIdleCheckInButtonText(lastCheckInTime, now = new Date()) {
+    if (!lastCheckInTime) return DEFAULT_IDLE_CHECK_IN_BUTTON_TEXT;
+    return isSameLocalDate(lastCheckInTime, now)
+      ? DEFAULT_IDLE_CHECK_IN_BUTTON_TEXT
+      : STALE_IDLE_CHECK_IN_BUTTON_TEXT;
+  }
+
   function countEnabledSites(sites = []) {
     if (!Array.isArray(sites)) return 0;
     return sites.filter(site => site?.enabled !== false).length;
@@ -83,6 +103,8 @@
   root.markSiteChecking = markSiteChecking;
   root.clearResultBalances = clearResultBalances;
   root.normalizeCheckInResultsForRun = normalizeCheckInResultsForRun;
+  root.isSameLocalDate = isSameLocalDate;
+  root.getIdleCheckInButtonText = getIdleCheckInButtonText;
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
@@ -95,7 +117,9 @@
       canClickCheckInButton,
       markSiteChecking,
       clearResultBalances,
-      normalizeCheckInResultsForRun
+      normalizeCheckInResultsForRun,
+      isSameLocalDate,
+      getIdleCheckInButtonText
     };
   }
 })(typeof self !== 'undefined' ? self : globalThis);
