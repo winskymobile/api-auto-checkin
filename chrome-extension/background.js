@@ -175,11 +175,20 @@ function requestCheckInCancel(cancelToken) {
 async function cancelCurrentCheckInRun() {
   if (!currentCheckInPromise || !currentCheckInCancelToken) {
     const data = await chrome.storage.local.get(['checkInResults', 'checkInRunState']);
+    const cancelUpdate = buildCheckInCancelUpdate(data, {
+      activeRun: false,
+      requestedAt: new Date().toISOString()
+    });
+    await chrome.storage.local.set({
+      checkInResults: cancelUpdate.results,
+      checkInRunState: cancelUpdate.runState
+    });
+
     return {
       success: true,
-      running: false,
-      results: normalizeCheckInResultsForRun(data.checkInResults || {}),
-      runState: getCheckInRunState(data)
+      running: cancelUpdate.running,
+      results: cancelUpdate.results,
+      runState: cancelUpdate.runState
     };
   }
 
@@ -189,26 +198,21 @@ async function cancelCurrentCheckInRun() {
   await runContext?.tabSession?.close?.();
 
   const data = await chrome.storage.local.get(['checkInResults', 'checkInRunState']);
-  const runState = getCheckInRunState(data);
-  const nextRunState = isCheckInRunningState(runState)
-    ? {
-      ...runState,
-      cancelling: true,
-      cancelRequestedAt: cancelToken.requestedAt
-    }
-    : runState;
-  const nextResults = normalizeCheckInResultsForRun(data.checkInResults || {});
+  const cancelUpdate = buildCheckInCancelUpdate(data, {
+    activeRun: true,
+    requestedAt: cancelToken.requestedAt
+  });
 
   await chrome.storage.local.set({
-    checkInResults: nextResults,
-    checkInRunState: nextRunState
+    checkInResults: cancelUpdate.results,
+    checkInRunState: cancelUpdate.runState
   });
 
   return {
     success: true,
-    running: isCheckInRunningState(nextRunState),
-    results: nextResults,
-    runState: nextRunState
+    running: cancelUpdate.running,
+    results: cancelUpdate.results,
+    runState: cancelUpdate.runState
   };
 }
 

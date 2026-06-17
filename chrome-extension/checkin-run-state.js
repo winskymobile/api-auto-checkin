@@ -93,6 +93,36 @@
     return normalized;
   }
 
+  function buildCheckInCancelUpdate(data = {}, { activeRun = false, requestedAt = new Date().toISOString() } = {}) {
+    const results = normalizeCheckInResultsForRun(data.checkInResults || {});
+    const runState = getCheckInRunState(data);
+    let nextRunState = runState;
+
+    if (isCheckInRunningState(runState)) {
+      if (activeRun) {
+        nextRunState = {
+          ...runState,
+          cancelling: true,
+          cancelRequestedAt: requestedAt
+        };
+      } else {
+        const { cancelling, ...restRunState } = runState;
+        nextRunState = {
+          ...restRunState,
+          running: false,
+          cancelRequestedAt: requestedAt,
+          finishedAt: requestedAt
+        };
+      }
+    }
+
+    return {
+      running: isCheckInRunningState(nextRunState),
+      results,
+      runState: nextRunState
+    };
+  }
+
   root.buildCheckInRunningState = buildCheckInRunningState;
   root.isCheckInRunningState = isCheckInRunningState;
   root.clearCheckInRunningState = clearCheckInRunningState;
@@ -105,6 +135,7 @@
   root.normalizeCheckInResultsForRun = normalizeCheckInResultsForRun;
   root.isSameLocalDate = isSameLocalDate;
   root.getIdleCheckInButtonText = getIdleCheckInButtonText;
+  root.buildCheckInCancelUpdate = buildCheckInCancelUpdate;
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
@@ -119,7 +150,8 @@
       clearResultBalances,
       normalizeCheckInResultsForRun,
       isSameLocalDate,
-      getIdleCheckInButtonText
+      getIdleCheckInButtonText,
+      buildCheckInCancelUpdate
     };
   }
 })(typeof self !== 'undefined' ? self : globalThis);
