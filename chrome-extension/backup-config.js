@@ -37,6 +37,9 @@
     if (typeof root.isValidAutoSignTime === 'function' && root.isValidAutoSignTime(autoSignTime)) {
       config.autoSignTime = autoSignTime;
     }
+    if (typeof exportOptions.focusHumanVerificationWindow === 'boolean') {
+      config.focusHumanVerificationWindow = exportOptions.focusHumanVerificationWindow;
+    }
     return config;
   }
 
@@ -46,6 +49,10 @@
       return time;
     }
     return null;
+  }
+
+  function getImportFocusHumanVerificationWindow(config) {
+    return config?.focusHumanVerificationWindow === true;
   }
 
   function normalizeImportSites(sites) {
@@ -74,6 +81,7 @@
 
   root.buildExportConfig = buildExportConfig;
   root.buildImportSites = buildImportSites;
+  root.getImportFocusHumanVerificationWindow = getImportFocusHumanVerificationWindow;
   root.getImportAutoSignTime = getImportAutoSignTime;
   root.normalizeImportSites = normalizeImportSites;
   root.normalizeExportSites = normalizeExportSites;
@@ -84,6 +92,7 @@
     module.exports = {
       buildExportConfig,
       buildImportSites,
+      getImportFocusHumanVerificationWindow,
       getImportAutoSignTime,
       normalizeExportSites,
       normalizeImportSites

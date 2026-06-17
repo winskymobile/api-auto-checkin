@@ -6,8 +6,12 @@
     };
   }
 
-  function shouldKeepOfficialPageFallbackTabOpen() {
-    return false;
+  function isHumanVerificationResult(result = {}) {
+    return result?.kind === 'security-check' || result?.requiresSecurityCheck === true;
+  }
+
+  function shouldKeepOfficialPageFallbackTabOpen(result = {}, options = {}) {
+    return options.focusHumanVerificationWindow === true && isHumanVerificationResult(result);
   }
 
   function getOfficialPageFallbackFailureMessage(pageResult = {}) {
@@ -24,6 +28,7 @@
   }
 
   root.getTemporaryCheckInTabCreateOptions = getTemporaryCheckInTabCreateOptions;
+  root.isHumanVerificationResult = isHumanVerificationResult;
   root.shouldKeepOfficialPageFallbackTabOpen = shouldKeepOfficialPageFallbackTabOpen;
   root.getOfficialPageFallbackFailureMessage = getOfficialPageFallbackFailureMessage;
 
@@ -31,6 +36,7 @@
     module.exports = {
       getTemporaryCheckInTabCreateOptions,
       getOfficialPageFallbackFailureMessage,
+      isHumanVerificationResult,
       shouldKeepOfficialPageFallbackTabOpen
     };
   }

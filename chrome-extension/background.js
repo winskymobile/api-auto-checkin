@@ -3,6 +3,7 @@ importScripts('schedule.js', 'config.js', 'auth-headers.js', 'checkin-result.js'
 
 const DAILY_CHECK_IN_ALARM = 'dailyCheckIn';
 const PAGE_USABLE_TIMEOUT_MS = 20000;
+const FOCUS_HUMAN_VERIFICATION_WINDOW_KEY = 'focusHumanVerificationWindow';
 let currentCheckInPromise = null;
 let currentCheckInCancelToken = null;
 let currentCheckInContext = null;
@@ -90,11 +91,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === 'getStatus') {
-    chrome.storage.local.get(['lastCheckInTime', 'checkInResults', 'checkInRunState', 'autoSignTime'], (data) => {
+    chrome.storage.local.get([
+      'lastCheckInTime',
+      'checkInResults',
+      'checkInRunState',
+      'autoSignTime',
+      FOCUS_HUMAN_VERIFICATION_WINDOW_KEY
+    ], (data) => {
       sendResponse({
         ...data,
         checkInRunState: getCheckInRunState(data),
-        autoSignTime: isValidAutoSignTime(data.autoSignTime) ? data.autoSignTime : GLOBAL_CONFIG.autoSignTime
+        autoSignTime: isValidAutoSignTime(data.autoSignTime) ? data.autoSignTime : GLOBAL_CONFIG.autoSignTime,
+        focusHumanVerificationWindow: data.focusHumanVerificationWindow === true
       });
     });
     return true;
@@ -893,6 +901,7 @@ async function tryOfficialPageFallback(site, execResult, tabToCleanup = null, ta
       if (tabToCleanup && tabToCleanup !== pageResult.tabId) {
         await closeTabUnlessInSession(tabToCleanup, tabSession);
       }
+      await focusTabWindow(pageResult.tabId);
       nextTabToCleanup = null;
     } else if (nextTabToCleanup && nextTabToCleanup !== pageResult.tabId) {
       await closeTabUnlessInSession(pageResult.tabId, tabSession);
@@ -1212,6 +1221,7 @@ async function checkInFromOfficialPage(site, tabSession = null) {
     await refreshTabBeforeReadingBalance(tab.id, site);
   }
   const fallbackPageBalance = await readBalanceFromTab(tab.id, site);
+  const fallbackOptions = await getOfficialPageFallbackOptions();
   console.log(`${site.siteName} 官方页面签到执行结果:`, pageResult);
 
   function withFallbackPageBalance(result) {
@@ -1226,13 +1236,13 @@ async function checkInFromOfficialPage(site, tabSession = null) {
     }
     if (parsed.requiresPageExecution) {
       parsed.message = '站点仍要求页面内操作，自动签到已停止';
-      return { result: withFallbackPageBalance(parsed), tabId: tab.id, keepTabOpen: shouldKeepOfficialPageFallbackTabOpen(parsed) };
+      return { result: withFallbackPageBalance(parsed), tabId: tab.id, keepTabOpen: shouldKeepOfficialPageFallbackTabOpen(parsed, fallbackOptions) };
     }
     if (parsed.requiresSecurityCheck) {
       parsed.message = '站点要求完成 Turnstile 安全验证，自动签到已停止';
-      return { result: withFallbackPageBalance(parsed), tabId: tab.id, keepTabOpen: shouldKeepOfficialPageFallbackTabOpen(parsed) };
+      return { result: withFallbackPageBalance(parsed), tabId: tab.id, keepTabOpen: shouldKeepOfficialPageFallbackTabOpen(parsed, fallbackOptions) };
     }
-    return { result: withFallbackPageBalance(parsed), tabId: tab.id, keepTabOpen: shouldKeepOfficialPageFallbackTabOpen(parsed) };
+    return { result: withFallbackPageBalance(parsed), tabId: tab.id, keepTabOpen: shouldKeepOfficialPageFallbackTabOpen(parsed, fallbackOptions) };
   }
 
   if (pageResult.kind === 'already') {
@@ -1272,8 +1282,29 @@ async function checkInFromOfficialPage(site, tabSession = null) {
       data: pageResult
     }),
     tabId: tab.id,
-    keepTabOpen: false
+    keepTabOpen: shouldKeepOfficialPageFallbackTabOpen(pageResult, fallbackOptions)
   };
+}
+
+async function getOfficialPageFallbackOptions() {
+  const data = await chrome.storage.local.get(FOCUS_HUMAN_VERIFICATION_WINDOW_KEY);
+  return {
+    focusHumanVerificationWindow: data.focusHumanVerificationWindow === true
+  };
+}
+
+async function focusTabWindow(tabId) {
+  if (!tabId) return;
+
+  try {
+    const tab = await chrome.tabs.update(tabId, { active: true });
+    const windowId = tab?.windowId;
+    if (windowId !== undefined && chrome.windows?.update) {
+      await chrome.windows.update(windowId, { focused: true });
+    }
+  } catch (e) {
+    console.warn('人机验证窗口前置失败:', e);
+  }
 }
 
 function shouldRefreshOfficialPageBeforeBalance(pageResult = {}) {

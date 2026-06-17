@@ -17,6 +17,24 @@ Thumbs.db
 *.tmp
 *.temp
 
+# Archives
+*.zip
+*.rar
+*.7z
+*.tar
+*.tar.gz
+*.tgz
+*.tar.bz2
+*.tbz2
+*.tar.xz
+*.txz
+*.gz
+*.bz2
+*.xz
+
+# Local docs
+doc/
+
 # User data
 chrome-extension/user-data/
 

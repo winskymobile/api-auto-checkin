@@ -3,6 +3,7 @@ let latestLastCheckInTime = null;
 let addingSite = false;
 let draggedSiteItem = null;
 let siteOrderChangedByDrag = false;
+const FOCUS_HUMAN_VERIFICATION_WINDOW_KEY = 'focusHumanVerificationWindow';
 const sitesRenderGuard = createLatestRenderGuard();
 
 // 页面加载时初始化
@@ -34,6 +35,7 @@ function setupEventListeners() {
   });
   document.getElementById('importFile').addEventListener('change', handleImport);
   document.getElementById('saveTimeBtn').addEventListener('click', handleSaveAutoSignTime);
+  document.getElementById('humanFocusToggle').addEventListener('change', handleHumanFocusToggleChange);
 }
 
 // 加载签到状态
@@ -53,6 +55,7 @@ function loadStatus() {
     if (response?.autoSignTime) {
       setAutoSignTimeDisplay(response.autoSignTime);
     }
+    setHumanFocusToggle(response?.focusHumanVerificationWindow === true);
   });
 }
 
@@ -83,6 +86,10 @@ function handleStorageChange(changes, areaName) {
       document.getElementById('lastCheck').textContent = '暂无签到记录';
     }
     updateCheckInButtonState();
+  }
+
+  if (changes[FOCUS_HUMAN_VERIFICATION_WINDOW_KEY]) {
+    setHumanFocusToggle(changes[FOCUS_HUMAN_VERIFICATION_WINDOW_KEY].newValue === true);
   }
 }
 
@@ -565,19 +572,34 @@ function setAutoSignTimeDisplay(time) {
   document.getElementById('autoSignTimeLabel').textContent = time;
 }
 
+function setHumanFocusToggle(enabled) {
+  const toggle = document.getElementById('humanFocusToggle');
+  if (toggle) toggle.checked = enabled === true;
+}
+
+async function handleHumanFocusToggleChange(event) {
+  await chrome.storage.local.set({
+    [FOCUS_HUMAN_VERIFICATION_WINDOW_KEY]: event.target.checked === true
+  });
+}
+
 // 导出配置
 async function handleExport() {
   const sites = await loadRawSites();
   const exportOrder = getCurrentSiteListOrder();
   const displayNamesByDomain = getCurrentSiteDisplayNamesByDomain();
-  const { autoSignTime } = await chrome.storage.local.get('autoSignTime');
+  const { autoSignTime, focusHumanVerificationWindow } = await chrome.storage.local.get([
+    'autoSignTime',
+    FOCUS_HUMAN_VERIFICATION_WINDOW_KEY
+  ]);
   const currentAutoSignTime = isValidAutoSignTime(autoSignTime)
     ? autoSignTime
     : document.getElementById('autoSignTime').value;
 
   const config = buildExportConfig(sites, currentAutoSignTime, {
     orderedDomains: exportOrder,
-    displayNamesByDomain
+    displayNamesByDomain,
+    focusHumanVerificationWindow: focusHumanVerificationWindow === true
   });
 
   const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
@@ -663,6 +685,12 @@ async function handleImport(event) {
       await chrome.runtime.sendMessage({ action: 'updateAutoSignTime', time: importedAutoSignTime });
       setAutoSignTimeDisplay(importedAutoSignTime);
     }
+
+    const importedFocusHumanVerificationWindow = getImportFocusHumanVerificationWindow(config);
+    await chrome.storage.local.set({
+      [FOCUS_HUMAN_VERIFICATION_WINDOW_KEY]: importedFocusHumanVerificationWindow
+    });
+    setHumanFocusToggle(importedFocusHumanVerificationWindow);
 
     renderSites();
   } catch (error) {
