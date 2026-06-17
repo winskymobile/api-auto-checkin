@@ -13,7 +13,8 @@ const {
   markSiteChecking,
   normalizeCheckInResultsForRun,
   isSameLocalDate,
-  getIdleCheckInButtonText
+  getIdleCheckInButtonText,
+  buildCheckInCancelUpdate
 } = require('../chrome-extension/checkin-run-state.js');
 
 test('builds and recognizes persisted check-in running state', () => {
@@ -89,6 +90,77 @@ test('keeps the main check-in button clickable while a run is active', () => {
   assert.equal(canClickCheckInButton([{ domain: 'a.example', enabled: false }], { running: false }), false);
   assert.equal(canClickCheckInButton([{ domain: 'a.example' }], { running: false }), true);
   assert.equal(canClickCheckInButton([{ domain: 'a.example' }], { running: true }), true);
+});
+
+test('clears persisted running state when cancelling without an active worker task', () => {
+  const update = buildCheckInCancelUpdate({
+    checkInRunState: {
+      running: true,
+      source: 'manual',
+      total: 2,
+      current: 1,
+      currentSiteId: 'a_example',
+      startedAt: '2026-06-17T01:00:00.000Z',
+      cancelling: true
+    },
+    checkInResults: {
+      a_example: { status: 'checking', message: '签到中' },
+      b_example: { status: 'success', message: 'ok' }
+    }
+  }, {
+    activeRun: false,
+    requestedAt: '2026-06-17T01:05:00.000Z'
+  });
+
+  assert.equal(update.running, false);
+  assert.deepEqual(update.runState, {
+    running: false,
+    source: 'manual',
+    total: 2,
+    current: 1,
+    currentSiteId: 'a_example',
+    startedAt: '2026-06-17T01:00:00.000Z',
+    cancelRequestedAt: '2026-06-17T01:05:00.000Z',
+    finishedAt: '2026-06-17T01:05:00.000Z'
+  });
+  assert.deepEqual(update.results, {
+    a_example: { status: 'failed', message: '签到中断' },
+    b_example: { status: 'success', message: 'ok' }
+  });
+});
+
+test('marks persisted running state as cancelling when an active worker task exists', () => {
+  const update = buildCheckInCancelUpdate({
+    checkInRunState: {
+      running: true,
+      source: 'manual',
+      total: 1,
+      current: 1,
+      currentSiteId: 'a_example',
+      startedAt: '2026-06-17T01:00:00.000Z'
+    },
+    checkInResults: {
+      a_example: { status: 'checking', message: '签到中' }
+    }
+  }, {
+    activeRun: true,
+    requestedAt: '2026-06-17T01:05:00.000Z'
+  });
+
+  assert.equal(update.running, true);
+  assert.deepEqual(update.runState, {
+    running: true,
+    source: 'manual',
+    total: 1,
+    current: 1,
+    currentSiteId: 'a_example',
+    startedAt: '2026-06-17T01:00:00.000Z',
+    cancelling: true,
+    cancelRequestedAt: '2026-06-17T01:05:00.000Z'
+  });
+  assert.deepEqual(update.results, {
+    a_example: { status: 'failed', message: '签到中断' }
+  });
 });
 
 test('uses immediate check-in button text when there is no history', () => {
