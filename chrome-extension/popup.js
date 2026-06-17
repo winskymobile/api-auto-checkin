@@ -1,6 +1,8 @@
 let currentRunState = { running: false };
 let latestLastCheckInTime = null;
 let addingSite = false;
+let draggedSiteItem = null;
+let siteOrderChangedByDrag = false;
 const sitesRenderGuard = createLatestRenderGuard();
 
 // 页面加载时初始化
@@ -123,6 +125,20 @@ async function renderSites(results, { preserveScroll = false } = {}) {
     item.dataset.domain = site.domain;
     if (!enabled) item.style.opacity = '0.5';
 
+    // 拖动手柄
+    const dragHandle = document.createElement('button');
+    dragHandle.type = 'button';
+    dragHandle.className = 'drag-handle';
+    dragHandle.draggable = true;
+    dragHandle.textContent = '⠿';
+    dragHandle.title = '拖动排序';
+    dragHandle.setAttribute('aria-label', `拖动 ${site.name || site.domain} 排序`);
+    dragHandle.addEventListener('dragstart', handleSiteDragStart);
+    dragHandle.addEventListener('dragend', handleSiteDragEnd);
+
+    item.addEventListener('dragover', handleSiteDragOver);
+    item.addEventListener('drop', handleSiteDrop);
+
     // 开关
     const toggle = document.createElement('input');
     toggle.type = 'checkbox';
@@ -185,6 +201,7 @@ async function renderSites(results, { preserveScroll = false } = {}) {
     del.title = '删除站点';
     del.addEventListener('click', () => removeSite(index));
 
+    item.appendChild(dragHandle);
     item.appendChild(toggle);
     item.appendChild(mode);
     item.appendChild(name);
@@ -203,6 +220,74 @@ async function renderSites(results, { preserveScroll = false } = {}) {
       }
     });
   }
+}
+
+function handleSiteDragStart(event) {
+  const item = event.currentTarget.closest('.site-item');
+  if (!item) return;
+
+  draggedSiteItem = item;
+  siteOrderChangedByDrag = false;
+  item.classList.add('dragging');
+
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', item.dataset.domain || '');
+    event.dataTransfer.setDragImage(item, 16, Math.max(8, item.offsetHeight / 2));
+  }
+}
+
+function handleSiteDragOver(event) {
+  if (!draggedSiteItem) return;
+
+  const targetItem = event.currentTarget;
+  if (!targetItem || targetItem === draggedSiteItem) return;
+
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+
+  const rect = targetItem.getBoundingClientRect();
+  const insertAfter = event.clientY > rect.top + rect.height / 2;
+  const parent = targetItem.parentNode;
+
+  if (insertAfter) {
+    if (targetItem.nextSibling !== draggedSiteItem) {
+      parent.insertBefore(draggedSiteItem, targetItem.nextSibling);
+      siteOrderChangedByDrag = true;
+    }
+    return;
+  }
+
+  if (targetItem.previousSibling !== draggedSiteItem) {
+    parent.insertBefore(draggedSiteItem, targetItem);
+    siteOrderChangedByDrag = true;
+  }
+}
+
+function handleSiteDrop(event) {
+  if (draggedSiteItem) {
+    event.preventDefault();
+  }
+}
+
+async function handleSiteDragEnd() {
+  const item = draggedSiteItem;
+  const shouldPersist = siteOrderChangedByDrag;
+
+  draggedSiteItem = null;
+  siteOrderChangedByDrag = false;
+  item?.classList.remove('dragging');
+
+  if (shouldPersist) {
+    await persistSiteOrderFromDom();
+  }
+}
+
+async function persistSiteOrderFromDom() {
+  const sites = await loadRawSites();
+  const orderedSites = reorderSitesByDomains(sites, getCurrentSiteListOrder());
+  await saveSitesConfig(orderedSites);
+  await renderSites(undefined, { preserveScroll: true });
 }
 
 // 更新统计数字

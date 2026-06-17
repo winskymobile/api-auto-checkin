@@ -68,6 +68,24 @@
     return extractBalanceFromData(result?.data) || formatBalanceValue(result?.balance);
   }
 
+  function extractSub2ApiBalanceFromTexts(texts = []) {
+    if (!Array.isArray(texts)) return null;
+
+    for (const text of texts) {
+      const fromLabel = extractBalanceFromText(text);
+      if (fromLabel) return fromLabel;
+
+      const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+      if (!normalized) continue;
+      if (/^[$¥￥]?\s*[-+]?\d+(?:,\d{3})*(?:\.\d+)?$/.test(normalized)) {
+        const formatted = formatBalanceValue(normalized);
+        if (formatted) return formatted;
+      }
+    }
+
+    return null;
+  }
+
   function extractBalanceFromText(text) {
     const normalized = String(text || '').replace(/\s+/g, ' ').trim();
     if (!normalized) return null;
@@ -87,12 +105,14 @@
   root.formatBalanceValue = formatBalanceValue;
   root.extractBalanceFromCheckInResult = extractBalanceFromCheckInResult;
   root.extractBalanceFromData = extractBalanceFromData;
+  root.extractSub2ApiBalanceFromTexts = extractSub2ApiBalanceFromTexts;
   root.extractBalanceFromText = extractBalanceFromText;
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
       extractBalanceFromCheckInResult,
       extractBalanceFromData,
+      extractSub2ApiBalanceFromTexts,
       extractBalanceFromText,
       formatBalanceValue
     };
