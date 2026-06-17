@@ -273,6 +273,37 @@
     .site-item:hover {
       background: var(--surface-subtle);
     }
+    .site-item.dragging {
+      opacity: 0.45;
+    }
+    .site-item .drag-handle {
+      flex-shrink: 0;
+      width: 20px;
+      height: 20px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      border: none;
+      border-radius: 6px;
+      color: var(--text-muted);
+      cursor: grab;
+      font-size: 13px;
+      line-height: 1;
+      padding: 0;
+      user-select: none;
+    }
+    .site-item .drag-handle:hover {
+      background: var(--neutral-bg);
+      color: var(--primary);
+    }
+    .site-item .drag-handle:active {
+      cursor: grabbing;
+    }
+    .site-item .drag-handle:focus-visible {
+      outline: 2px solid var(--focus-outline);
+      outline-offset: 2px;
+    }
     .site-status {
       padding: 3px 10px;
       border: none;
@@ -543,6 +574,7 @@
   <script src="schedule.js"></script>
   <script src="backup-config.js"></script>
   <script src="site-url.js"></script>
+  <script src="site-order.js"></script>
   <script src="config.js"></script>
   <script src="checkin-run-state.js"></script>
   <script src="render-guard.js"></script>

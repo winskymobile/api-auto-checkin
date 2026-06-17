@@ -1927,9 +1927,21 @@ async function readBalanceFromTab(tabId, site) {
     await chrome.tabs.get(tabId);
     const results = await chrome.scripting.executeScript({
       target: { tabId },
-      func: () => document.body?.innerText || ''
+      func: (isSub2Api) => ({
+        bodyText: document.body?.innerText || '',
+        sub2ApiBalanceTexts: isSub2Api
+          ? Array.from(document.querySelectorAll('.text-sm.font-semibold'))
+            .map(el => el.textContent || '')
+          : []
+      }),
+      args: [site?.type === 'sub2api']
     });
-    return extractBalanceFromText(results[0]?.result || '');
+    const pageBalance = results[0]?.result || {};
+    if (site?.type === 'sub2api') {
+      const fromSub2ApiPage = extractSub2ApiBalanceFromTexts(pageBalance.sub2ApiBalanceTexts || []);
+      if (fromSub2ApiPage) return fromSub2ApiPage;
+    }
+    return extractBalanceFromText(pageBalance.bodyText || '');
   } catch (e) {
     console.warn(`${site.siteName} 页面余额读取失败:`, e);
     return null;

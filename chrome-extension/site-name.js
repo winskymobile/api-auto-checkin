@@ -6,7 +6,11 @@
   }
 
   function normalizeFetchedSiteName(name, domain) {
-    const normalized = String(name || '').replace(/\s+/g, ' ').trim();
+    const normalized = String(name || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/^每日签到\s*-\s*/, '')
+      .trim();
     if (!normalized) return null;
     if (normalized === String(domain || '').trim()) return null;
     return normalized;
