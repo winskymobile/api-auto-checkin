@@ -8,8 +8,9 @@ const sitesRenderGuard = createLatestRenderGuard();
 
 // 页面加载时初始化
 document.addEventListener('DOMContentLoaded', () => {
-  loadStatus();
   setupEventListeners();
+  loadHumanFocusToggleState();
+  loadStatus();
   chrome.storage.onChanged.addListener(handleStorageChange);
 });
 
@@ -55,7 +56,7 @@ function loadStatus() {
     if (response?.autoSignTime) {
       setAutoSignTimeDisplay(response.autoSignTime);
     }
-    setHumanFocusToggle(response?.focusHumanVerificationWindow === true);
+    applyHumanFocusToggleState(response);
   });
 }
 
@@ -89,7 +90,9 @@ function handleStorageChange(changes, areaName) {
   }
 
   if (changes[FOCUS_HUMAN_VERIFICATION_WINDOW_KEY]) {
-    setHumanFocusToggle(changes[FOCUS_HUMAN_VERIFICATION_WINDOW_KEY].newValue === true);
+    applyHumanFocusToggleState({
+      [FOCUS_HUMAN_VERIFICATION_WINDOW_KEY]: changes[FOCUS_HUMAN_VERIFICATION_WINDOW_KEY].newValue
+    });
   }
 }
 
@@ -575,6 +578,17 @@ function setAutoSignTimeDisplay(time) {
 function setHumanFocusToggle(enabled) {
   const toggle = document.getElementById('humanFocusToggle');
   if (toggle) toggle.checked = enabled === true;
+}
+
+async function loadHumanFocusToggleState() {
+  const data = await chrome.storage.local.get(FOCUS_HUMAN_VERIFICATION_WINDOW_KEY);
+  applyHumanFocusToggleState(data);
+}
+
+function applyHumanFocusToggleState(record = {}) {
+  const toggle = document.getElementById('humanFocusToggle');
+  const currentChecked = toggle?.checked === true;
+  setHumanFocusToggle(resolveHumanFocusToggleState(currentChecked, record));
 }
 
 async function handleHumanFocusToggleChange(event) {

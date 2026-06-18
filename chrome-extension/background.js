@@ -1,5 +1,5 @@
 // 导入配置
-importScripts('schedule.js', 'config.js', 'auth-headers.js', 'checkin-result.js', 'newapi-auth.js', 'zenapi-auth.js', 'tab-options.js', 'site-name.js', 'page-status.js', 'checkin-run-state.js', 'balance.js', 'extension-storage.js');
+importScripts('schedule.js', 'config.js', 'auth-headers.js', 'checkin-result.js', 'newapi-auth.js', 'zenapi-auth.js', 'tab-options.js', 'site-name.js', 'page-status.js', 'checkin-run-state.js', 'balance.js', 'extension-storage.js', 'human-focus-toggle.js', 'sub2api-endpoints.js');
 
 const DAILY_CHECK_IN_ALARM = 'dailyCheckIn';
 const PAGE_USABLE_TIMEOUT_MS = 20000;
@@ -40,6 +40,13 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
 // 监听来自 popup 的消息
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (isHumanVerificationDetectedMessage(request)) {
+    handleHumanVerificationDetected(sender).then(sendResponse).catch(error => {
+      sendResponse({ success: false, focused: false, error: error.message });
+    });
+    return true;
+  }
+
   if (request.action === 'manualCheckIn') {
     if (currentCheckInPromise) {
       chrome.storage.local.get(['checkInResults', 'checkInRunState'], (data) => {
@@ -786,7 +793,7 @@ async function checkInSub2ApiSite(site, tabSession = null) {
 
   const sub2ApiHeaders = { ...authHeaders, _needsTabExecution: true, _successOnHttpOk: true };
   let activeHeaders = sub2ApiHeaders;
-  let execResult = await doCheckInRequest(site.signExecUrl, site.signExecMethod, site.signExecParams, sub2ApiHeaders);
+  let execResult = await requestSub2ApiCheckIn(site, sub2ApiHeaders, doCheckInRequest);
   console.log(`${site.siteName} Sub2API 签到响应:`, execResult);
 
   if (execResult.httpStatus === 401 || execResult.httpStatus === 403) {
@@ -805,7 +812,7 @@ async function checkInSub2ApiSite(site, tabSession = null) {
       if (hasAuthorizationHeader(authHeaders)) {
         await cacheHeaders(site.siteId, authHeaders);
       }
-      execResult = await doCheckInRequest(site.signExecUrl, site.signExecMethod, site.signExecParams, retryHeaders);
+      execResult = await requestSub2ApiCheckIn(site, retryHeaders, doCheckInRequest);
       console.log(`${site.siteName} Sub2API 重新读取令牌后签到响应:`, execResult);
       if (tabToCleanup && tabToCleanup !== tab.id) await closeTabUnlessInSession(tabToCleanup, tabSession);
       tabToCleanup = tab.id;
@@ -887,9 +894,11 @@ async function tryOfficialPageFallback(site, execResult, tabToCleanup = null, ta
   }
 
   console.log(`${site.siteName} 接口签到失败，尝试打开官方页面点击签到按钮...`);
+  const fallbackOptions = await getOfficialPageFallbackOptions();
+  const openInForeground = shouldOpenOfficialPageFallbackInForeground(execResult, fallbackOptions);
   let pageResult;
   try {
-    pageResult = await checkInFromOfficialPage(site, tabSession);
+    pageResult = await checkInFromOfficialPage(site, tabSession, { openInForeground });
   } catch (e) {
     await closeTabUnlessInSession(tabToCleanup, tabSession);
     throw e;
@@ -914,8 +923,13 @@ async function tryOfficialPageFallback(site, execResult, tabToCleanup = null, ta
   return { execResult: pageResult.result, tabToCleanup: nextTabToCleanup };
 }
 
-async function checkInFromOfficialPage(site, tabSession = null) {
-  const tab = await openSiteSessionTab(tabSession, site.visitUrl, 20000);
+async function checkInFromOfficialPage(site, tabSession = null, options = {}) {
+  const tab = await openSiteSessionTab(tabSession, site.visitUrl, 20000, {
+    active: options.openInForeground === true
+  });
+  if (options.openInForeground === true) {
+    await focusTabWindow(tab.id);
+  }
   await sleep(3000);
 
   const results = await chrome.scripting.executeScript({
@@ -987,6 +1001,7 @@ async function checkInFromOfficialPage(site, tabSession = null) {
       const pollIntervalMs = 500;
       const regularWaitLoops = 40;
       const securityCheckWaitLoops = 40;
+      let securityCheckNotified = false;
 
       function isVisible(el) {
         const style = window.getComputedStyle(el);
@@ -999,7 +1014,7 @@ async function checkInFromOfficialPage(site, tabSession = null) {
 
       function hasSecurityCheck() {
         const text = document.body?.innerText || '';
-        return /Security Check|安全验证|人机验证|Turnstile|captcha|验证码|请完成验证|verify you are human/i.test(text) ||
+        const detected = /Security Check|安全验证|人机验证|Turnstile|captcha|验证码|请完成验证|verify you are human/i.test(text) ||
           Boolean(document.querySelector([
             'iframe[src*="challenges.cloudflare.com"]',
             'iframe[src*="turnstile"]',
@@ -1014,6 +1029,20 @@ async function checkInFromOfficialPage(site, tabSession = null) {
             'textarea[name="g-recaptcha-response"]',
             'textarea[name="h-captcha-response"]'
           ].join(', ')));
+        if (detected) notifySecurityCheckDetected();
+        return detected;
+      }
+
+      function notifySecurityCheckDetected() {
+        if (securityCheckNotified) return;
+        securityCheckNotified = true;
+        try {
+          if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
+            chrome.runtime.sendMessage({ action: 'humanVerificationDetected' }, () => {
+              void chrome.runtime?.lastError;
+            });
+          }
+        } catch (e) {}
       }
 
       function getCandidateText(el) {
@@ -1289,8 +1318,23 @@ async function checkInFromOfficialPage(site, tabSession = null) {
 async function getOfficialPageFallbackOptions() {
   const data = await chrome.storage.local.get(FOCUS_HUMAN_VERIFICATION_WINDOW_KEY);
   return {
-    focusHumanVerificationWindow: data.focusHumanVerificationWindow === true
+    focusHumanVerificationWindow: getHumanFocusToggleState(data)
   };
+}
+
+async function handleHumanVerificationDetected(sender = {}) {
+  const tabId = sender?.tab?.id;
+  if (!tabId) {
+    return { success: false, focused: false, error: 'missing tab id' };
+  }
+
+  const fallbackOptions = await getOfficialPageFallbackOptions();
+  if (!fallbackOptions.focusHumanVerificationWindow) {
+    return { success: true, focused: false };
+  }
+
+  await focusTabWindow(tabId);
+  return { success: true, focused: true };
 }
 
 async function focusTabWindow(tabId) {
@@ -2821,8 +2865,8 @@ async function autoOAuthLogin(domain, visitUrl, tabSession = null) {
   }
 }
 
-async function createTemporaryBackgroundTab(url, timeout = 15000) {
-  const tab = await chrome.tabs.create(getTemporaryCheckInTabCreateOptions(url));
+async function createTemporaryBackgroundTab(url, timeout = 15000, options = {}) {
+  const tab = await chrome.tabs.create(getTemporaryCheckInTabCreateOptions(url, options));
   try {
     const tabInfo = await ensureTabPageReady(tab.id, url, timeout);
     tabInfo._autoCreated = true;
@@ -2839,9 +2883,9 @@ function createSiteTabSession() {
     owns(id) {
       return Boolean(tabId && id && tabId === id);
     },
-    async open(url, timeout = 15000) {
+    async open(url, timeout = 15000, options = {}) {
       if (!tabId) {
-        const tab = await createTemporaryBackgroundTab(url, timeout);
+        const tab = await createTemporaryBackgroundTab(url, timeout, options);
         tabId = tab.id;
         return tab;
       }
@@ -2856,7 +2900,7 @@ function createSiteTabSession() {
       }
 
       try {
-        await chrome.tabs.update(tabId, { url, active: false });
+        await chrome.tabs.update(tabId, { url, active: options.active === true });
         const tabInfo = await ensureTabPageReady(tabId, url, timeout);
         tabInfo._autoCreated = true;
         return tabInfo;
@@ -2875,11 +2919,11 @@ function createSiteTabSession() {
   };
 }
 
-async function openSiteSessionTab(tabSession, url, timeout = 15000) {
+async function openSiteSessionTab(tabSession, url, timeout = 15000, options = {}) {
   if (tabSession) {
-    return tabSession.open(url, timeout);
+    return tabSession.open(url, timeout, options);
   }
-  return createTemporaryBackgroundTab(url, timeout);
+  return createTemporaryBackgroundTab(url, timeout, options);
 }
 
 async function closeTabUnlessInSession(tabId, tabSession = null) {

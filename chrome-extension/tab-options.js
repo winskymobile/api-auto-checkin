@@ -1,8 +1,8 @@
 (function(root) {
-  function getTemporaryCheckInTabCreateOptions(url) {
+  function getTemporaryCheckInTabCreateOptions(url, options = {}) {
     return {
       url,
-      active: false
+      active: options.active === true
     };
   }
 
@@ -12,6 +12,10 @@
 
   function shouldKeepOfficialPageFallbackTabOpen(result = {}, options = {}) {
     return options.focusHumanVerificationWindow === true && isHumanVerificationResult(result);
+  }
+
+  function shouldOpenOfficialPageFallbackInForeground(result = {}, options = {}) {
+    return shouldKeepOfficialPageFallbackTabOpen(result, options);
   }
 
   function getOfficialPageFallbackFailureMessage(pageResult = {}) {
@@ -29,6 +33,7 @@
 
   root.getTemporaryCheckInTabCreateOptions = getTemporaryCheckInTabCreateOptions;
   root.isHumanVerificationResult = isHumanVerificationResult;
+  root.shouldOpenOfficialPageFallbackInForeground = shouldOpenOfficialPageFallbackInForeground;
   root.shouldKeepOfficialPageFallbackTabOpen = shouldKeepOfficialPageFallbackTabOpen;
   root.getOfficialPageFallbackFailureMessage = getOfficialPageFallbackFailureMessage;
 
@@ -37,6 +42,7 @@
       getTemporaryCheckInTabCreateOptions,
       getOfficialPageFallbackFailureMessage,
       isHumanVerificationResult,
+      shouldOpenOfficialPageFallbackInForeground,
       shouldKeepOfficialPageFallbackTabOpen
     };
   }

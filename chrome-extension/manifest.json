@@ -9,6 +9,7 @@
     "alarms",
     "scripting",
     "tabs",
+    "windows",
     "webRequest"
   ],
   "host_permissions": [
