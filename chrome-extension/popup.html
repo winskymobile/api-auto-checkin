@@ -151,6 +151,9 @@
     }
     .btn:focus-visible,
     .site-link:focus-visible,
+    .site-mode:focus-visible,
+    .site-actions-button:focus-visible,
+    .site-actions-menu-item:focus-visible,
     .toggle:focus-visible,
     .visit-only input:focus-visible {
       outline: 2px solid var(--focus-outline);
@@ -266,15 +269,6 @@
       outline: 2px solid var(--focus-outline);
       outline-offset: 2px;
     }
-    .btn-del {
-      background: none;
-      color: var(--text-muted);
-      padding: 2px 6px;
-      font-size: 16px;
-      cursor: pointer;
-      border: none;
-    }
-    .btn-del:hover { color: var(--neutral-text); }
     .btn-export {
       flex: 1;
       background: var(--secondary-button-bg);
@@ -409,16 +403,88 @@
     }
     .site-mode {
       padding: 3px 8px;
+      border: none;
       border-radius: 10px;
       font-size: 10px;
       font-weight: bold;
       flex-shrink: 0;
       background: var(--neutral-bg);
       color: var(--neutral-text);
+      cursor: pointer;
+      line-height: 1.2;
     }
+    .site-mode:hover { filter: brightness(0.97); }
     .site-mode.visit {
       background: var(--visit-bg);
       color: var(--visit-text);
+    }
+    .site-actions-button {
+      flex-shrink: 0;
+      width: 24px;
+      height: 24px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      border: none;
+      border-radius: 6px;
+      color: var(--text-muted);
+      cursor: pointer;
+      padding: 0;
+    }
+    .site-actions-button:hover {
+      background: var(--neutral-bg);
+      color: var(--primary);
+    }
+    .site-actions-icon {
+      width: 16px;
+      height: 16px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: currentColor;
+    }
+    .site-actions-icon::before {
+      content: '';
+      width: 3px;
+      height: 3px;
+      border-radius: 50%;
+      background: currentColor;
+      box-shadow: -6px 0 0 currentColor, 6px 0 0 currentColor;
+    }
+    .site-actions-menu {
+      position: fixed;
+      z-index: 30;
+      min-width: 112px;
+      padding: 4px;
+      background: var(--surface);
+      border: 1px solid var(--surface-border);
+      border-radius: 8px;
+      box-shadow: 0 8px 18px rgba(24,24,27,0.14);
+    }
+    .site-actions-menu-item {
+      width: 100%;
+      min-height: 30px;
+      padding: 6px 10px;
+      border: none;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--text);
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+      text-align: left;
+    }
+    .site-actions-menu-item:hover {
+      background: var(--surface-subtle);
+    }
+    .site-actions-menu-item.danger {
+      color: var(--danger-text);
+    }
+    @media (prefers-color-scheme: dark) {
+      .site-actions-menu {
+        box-shadow: 0 12px 24px rgba(0,0,0,0.34);
+      }
     }
     .empty-state {
       padding: 16px 10px 8px;
@@ -641,7 +707,7 @@
       <div class="last-check" id="lastCheck">暂无签到记录</div>
     </div>
 
-    <div class="footer">v1.20</div>
+    <div class="footer">v1.30</div>
   </div>
 
   <script src="schedule.js"></script>
@@ -652,6 +718,7 @@
   <script src="checkin-run-state.js"></script>
   <script src="render-guard.js"></script>
   <script src="human-focus-toggle.js"></script>
+  <script src="site-actions.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

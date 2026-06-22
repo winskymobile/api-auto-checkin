@@ -3,6 +3,7 @@ let latestLastCheckInTime = null;
 let addingSite = false;
 let draggedSiteItem = null;
 let siteOrderChangedByDrag = false;
+let openSiteActionMenuState = null;
 const FOCUS_HUMAN_VERIFICATION_WINDOW_KEY = 'focusHumanVerificationWindow';
 const sitesRenderGuard = createLatestRenderGuard();
 
@@ -37,6 +38,9 @@ function setupEventListeners() {
   document.getElementById('importFile').addEventListener('change', handleImport);
   document.getElementById('saveTimeBtn').addEventListener('click', handleSaveAutoSignTime);
   document.getElementById('humanFocusToggle').addEventListener('change', handleHumanFocusToggleChange);
+  document.addEventListener('click', handleSiteActionMenuDocumentClick);
+  document.addEventListener('keydown', handleSiteActionMenuKeyDown);
+  window.addEventListener('scroll', () => closeSiteActionMenu(), true);
 }
 
 // 加载签到状态
@@ -114,6 +118,7 @@ async function renderSites(results, { preserveScroll = false } = {}) {
   const sitesList = document.getElementById('sitesList');
   document.getElementById('totalSites').textContent = sites.filter(s => s.enabled !== false).length;
   updateCheckInButtonState(sites);
+  closeSiteActionMenu();
 
   if (sites.length === 0) {
     const empty = document.createElement('div');
@@ -188,14 +193,18 @@ async function renderSites(results, { preserveScroll = false } = {}) {
     }
 
     // 模式/类型
-    const mode = document.createElement('span');
+    const modeView = getSiteModeView(site);
+    const mode = document.createElement('button');
+    mode.type = 'button';
     mode.className = 'site-mode';
-    if (site.mode === 'visit') {
-      mode.classList.add('visit');
-      mode.textContent = '访问';
-    } else {
-      mode.textContent = '自动';
-    }
+    if (modeView.className) mode.classList.add(modeView.className);
+    mode.textContent = modeView.label;
+    mode.title = modeView.title;
+    mode.setAttribute('aria-label', `${getSiteDisplayName(site)}：${modeView.title}`);
+    mode.addEventListener('click', (event) => {
+      event.stopPropagation();
+      handleToggleSiteMode(index);
+    });
 
     const balance = document.createElement('span');
     balance.className = 'site-balance';
@@ -204,12 +213,19 @@ async function renderSites(results, { preserveScroll = false } = {}) {
       balance.title = `余额: ${result.balance}`;
     }
 
-    // 删除按钮
-    const del = document.createElement('button');
-    del.className = 'btn-del';
-    del.textContent = '\u00d7';
-    del.title = '删除站点';
-    del.addEventListener('click', () => removeSite(index));
+    const actions = document.createElement('button');
+    actions.type = 'button';
+    actions.className = 'site-actions-button';
+    actions.title = '更多操作';
+    actions.setAttribute('aria-label', `${getSiteDisplayName(site)} 更多操作`);
+    const actionsIcon = document.createElement('span');
+    actionsIcon.className = 'site-actions-icon';
+    actionsIcon.setAttribute('aria-hidden', 'true');
+    actions.appendChild(actionsIcon);
+    actions.addEventListener('click', (event) => {
+      event.stopPropagation();
+      toggleSiteActionMenu(index, actions);
+    });
 
     item.appendChild(dragHandle);
     item.appendChild(toggle);
@@ -217,7 +233,7 @@ async function renderSites(results, { preserveScroll = false } = {}) {
     item.appendChild(name);
     if (result?.balance) item.appendChild(balance);
     item.appendChild(status);
-    item.appendChild(del);
+    item.appendChild(actions);
     fragment.appendChild(item);
   });
 
@@ -376,6 +392,104 @@ async function toggleSite(index, enabled) {
     await saveSitesConfig(sites);
     await renderSites(undefined, { preserveScroll: true });
   }
+}
+
+async function handleToggleSiteMode(index) {
+  const sites = await loadRawSites();
+  const site = sites[index];
+  if (!site) return;
+
+  if (!confirm(buildModeSwitchConfirmationMessage(site))) return;
+
+  sites[index] = getSwitchedSiteMode(site);
+  await saveSitesConfig(sites);
+  await renderSites(undefined, { preserveScroll: true });
+}
+
+function toggleSiteActionMenu(index, anchor) {
+  if (openSiteActionMenuState?.index === index) {
+    closeSiteActionMenu();
+    return;
+  }
+
+  openSiteActionMenu(index, anchor);
+}
+
+function openSiteActionMenu(index, anchor) {
+  closeSiteActionMenu();
+
+  const menu = document.createElement('div');
+  menu.className = 'site-actions-menu';
+  menu.setAttribute('role', 'menu');
+
+  const rename = document.createElement('button');
+  rename.type = 'button';
+  rename.className = 'site-actions-menu-item';
+  rename.textContent = '修改名称';
+  rename.setAttribute('role', 'menuitem');
+  rename.addEventListener('click', async (event) => {
+    event.stopPropagation();
+    closeSiteActionMenu();
+    await renameSite(index);
+  });
+
+  const remove = document.createElement('button');
+  remove.type = 'button';
+  remove.className = 'site-actions-menu-item danger';
+  remove.textContent = '删除';
+  remove.setAttribute('role', 'menuitem');
+  remove.addEventListener('click', async (event) => {
+    event.stopPropagation();
+    closeSiteActionMenu();
+    await removeSite(index);
+  });
+
+  menu.appendChild(rename);
+  menu.appendChild(remove);
+  document.body.appendChild(menu);
+  positionSiteActionMenu(menu, anchor);
+  openSiteActionMenuState = { index, menu, anchor };
+}
+
+function positionSiteActionMenu(menu, anchor) {
+  const rect = anchor.getBoundingClientRect();
+  const menuWidth = Math.max(menu.offsetWidth, 112);
+  const left = Math.max(8, Math.min(window.innerWidth - menuWidth - 8, rect.right - menuWidth));
+  const top = Math.min(window.innerHeight - menu.offsetHeight - 8, rect.bottom + 4);
+  menu.style.left = `${left}px`;
+  menu.style.top = `${Math.max(8, top)}px`;
+}
+
+function closeSiteActionMenu() {
+  openSiteActionMenuState?.menu?.remove();
+  openSiteActionMenuState = null;
+}
+
+function handleSiteActionMenuDocumentClick(event) {
+  const menu = openSiteActionMenuState?.menu;
+  const anchor = openSiteActionMenuState?.anchor;
+  if (!menu) return;
+  if (menu.contains(event.target) || anchor?.contains(event.target)) return;
+  closeSiteActionMenu();
+}
+
+function handleSiteActionMenuKeyDown(event) {
+  if (event.key === 'Escape') {
+    closeSiteActionMenu();
+  }
+}
+
+async function renameSite(index) {
+  const sites = await loadRawSites();
+  const site = sites[index];
+  if (!site) return;
+
+  const nextName = normalizeSiteRename(prompt('修改名称', getSiteDisplayName(site)));
+  if (!nextName) return;
+
+  sites[index] = { ...site, name: nextName };
+  await saveSitesConfig(sites);
+  await renderSites(undefined, { preserveScroll: true });
 }
 
 // 删除站点
