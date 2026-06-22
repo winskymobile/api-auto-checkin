@@ -1,5 +1,5 @@
 // 导入配置
-importScripts('schedule.js', 'config.js', 'auth-headers.js', 'checkin-result.js', 'newapi-auth.js', 'zenapi-auth.js', 'tab-options.js', 'site-name.js', 'page-status.js', 'checkin-run-state.js', 'balance.js', 'extension-storage.js', 'human-focus-toggle.js', 'sub2api-endpoints.js');
+importScripts('schedule.js', 'config.js', 'auth-headers.js', 'checkin-result.js', 'newapi-auth.js', 'zenapi-auth.js', 'sub2api-auth.js', 'tab-options.js', 'site-name.js', 'page-status.js', 'checkin-run-state.js', 'balance.js', 'extension-storage.js', 'human-focus-toggle.js', 'sub2api-endpoints.js');
 
 const DAILY_CHECK_IN_ALARM = 'dailyCheckIn';
 const PAGE_USABLE_TIMEOUT_MS = 20000;
@@ -772,23 +772,18 @@ async function checkInSub2ApiSite(site, tabSession = null) {
   let tabToCleanup = null;
 
   if (!hasSub2ApiUsableAuth(authHeaders)) {
-    const tab = await openSiteSessionTab(tabSession, site.visitUrl);
-    authHeaders = await readSub2ApiAuthHeadersFromTab(tab.id, authHeaders);
+    const refreshedAuth = await refreshSub2ApiAuthHeaders(site, tabSession, authHeaders);
+    authHeaders = refreshedAuth.headers;
+    tabToCleanup = refreshedAuth.tabId;
 
     if (!hasSub2ApiUsableAuth(authHeaders)) {
-      const oauthResult = await autoSub2ApiOAuthLogin(site.cookieDomain, tab.id, site.visitUrl);
-      authHeaders = oauthResult?.headers || authHeaders;
-    }
-
-    if (!hasSub2ApiUsableAuth(authHeaders)) {
-      await closeTabUnlessInSession(tab.id, tabSession);
+      await closeTabUnlessInSession(tabToCleanup, tabSession);
       throw new Error('Sub2API 登录失败，请确认浏览器已登录 linux.do 后重试');
     }
 
     if (hasAuthorizationHeader(authHeaders)) {
       await cacheHeaders(site.siteId, authHeaders);
     }
-    tabToCleanup = tab.id;
   }
 
   const sub2ApiHeaders = { ...authHeaders, _needsTabExecution: true, _successOnHttpOk: true };
@@ -798,13 +793,9 @@ async function checkInSub2ApiSite(site, tabSession = null) {
 
   if (execResult.httpStatus === 401 || execResult.httpStatus === 403) {
     await clearCachedHeaders(site.siteId);
-    const tab = await openSiteSessionTab(tabSession, site.visitUrl);
-    authHeaders = await readSub2ApiAuthHeadersFromTab(tab.id, null);
-
-    if (!hasSub2ApiUsableAuth(authHeaders)) {
-      const oauthResult = await autoSub2ApiOAuthLogin(site.cookieDomain, tab.id, site.visitUrl);
-      authHeaders = oauthResult?.headers || authHeaders;
-    }
+    const refreshedAuth = await refreshSub2ApiAuthHeaders(site, tabSession, null);
+    authHeaders = refreshedAuth.headers;
+    const authTabId = refreshedAuth.tabId;
 
     if (hasSub2ApiUsableAuth(authHeaders)) {
       const retryHeaders = { ...authHeaders, _needsTabExecution: true, _successOnHttpOk: true };
@@ -814,10 +805,10 @@ async function checkInSub2ApiSite(site, tabSession = null) {
       }
       execResult = await requestSub2ApiCheckIn(site, retryHeaders, doCheckInRequest);
       console.log(`${site.siteName} Sub2API 重新读取令牌后签到响应:`, execResult);
-      if (tabToCleanup && tabToCleanup !== tab.id) await closeTabUnlessInSession(tabToCleanup, tabSession);
-      tabToCleanup = tab.id;
+      if (tabToCleanup && tabToCleanup !== authTabId) await closeTabUnlessInSession(tabToCleanup, tabSession);
+      tabToCleanup = authTabId;
     } else {
-      await closeTabUnlessInSession(tab.id, tabSession);
+      await closeTabUnlessInSession(authTabId, tabSession);
     }
   }
 
@@ -829,18 +820,36 @@ async function checkInSub2ApiSite(site, tabSession = null) {
   return result;
 }
 
+async function refreshSub2ApiAuthHeaders(site, tabSession = null, baseHeaders = null) {
+  let authHeaders = baseHeaders || null;
+  let authTabId = null;
+
+  const oauthResult = await autoSub2ApiOAuthLogin(site.cookieDomain, null, site.visitUrl);
+  authHeaders = oauthResult?.headers || authHeaders;
+  authTabId = oauthResult?.tabId || null;
+
+  if (!hasSub2ApiUsableAuth(authHeaders)) {
+    const tab = await openSiteSessionTab(tabSession, site.visitUrl);
+    authTabId = tab.id;
+    authHeaders = await readSub2ApiAuthHeadersFromTab(tab.id, authHeaders);
+  }
+
+  return { headers: authHeaders, tabId: authTabId };
+}
+
 async function checkInZenApiSite(site, tabSession = null) {
   let authHeaders = await getCachedHeaders(site.siteId);
   let tabToCleanup = null;
 
   if (!hasAuthorizationHeader(authHeaders)) {
     const tab = await openSiteSessionTab(tabSession, site.visitUrl);
+    let authTabId = tab.id;
     authHeaders = await readStorageTokenAuthHeadersFromTab(tab.id, ['user_token'], authHeaders);
 
     if (!hasAuthorizationHeader(authHeaders)) {
       const oauthResult = await autoZenApiOAuthLogin(site.cookieDomain, tab.id);
       authHeaders = oauthResult?.headers || authHeaders;
-      if (oauthResult?.tabId && tab._autoCreated) tabToCleanup = oauthResult.tabId;
+      authTabId = oauthResult?.tabId || authTabId;
     }
 
     if (!hasAuthorizationHeader(authHeaders)) {
@@ -849,7 +858,7 @@ async function checkInZenApiSite(site, tabSession = null) {
     }
 
     await cacheHeaders(site.siteId, authHeaders);
-    tabToCleanup = tab.id;
+    tabToCleanup = authTabId;
   }
 
   const zenApiHeaders = { ...authHeaders, _needsTabExecution: true };
@@ -860,11 +869,13 @@ async function checkInZenApiSite(site, tabSession = null) {
   if (execResult.httpStatus === 401 || execResult.httpStatus === 403) {
     await clearCachedHeaders(site.siteId);
     const tab = await openSiteSessionTab(tabSession, site.visitUrl);
+    let authTabId = tab.id;
     authHeaders = await readStorageTokenAuthHeadersFromTab(tab.id, ['user_token'], null);
 
     if (!hasAuthorizationHeader(authHeaders)) {
       const oauthResult = await autoZenApiOAuthLogin(site.cookieDomain, tab.id);
       authHeaders = oauthResult?.headers || authHeaders;
+      authTabId = oauthResult?.tabId || authTabId;
     }
 
     if (hasAuthorizationHeader(authHeaders)) {
@@ -873,8 +884,8 @@ async function checkInZenApiSite(site, tabSession = null) {
       await cacheHeaders(site.siteId, authHeaders);
       execResult = await doCheckInRequest(site.signExecUrl, site.signExecMethod, site.signExecParams, retryHeaders);
       console.log(`${site.siteName} ZenAPI 重新读取令牌后签到响应:`, execResult);
-      if (tabToCleanup && tabToCleanup !== tab.id) await closeTabUnlessInSession(tabToCleanup, tabSession);
-      tabToCleanup = tab.id;
+      if (tabToCleanup && tabToCleanup !== authTabId) await closeTabUnlessInSession(tabToCleanup, tabSession);
+      tabToCleanup = authTabId;
     } else {
       await closeTabUnlessInSession(tab.id, tabSession);
     }
@@ -1379,6 +1390,7 @@ async function autoZenApiOAuthLogin(domain, tabId = null) {
   let tab;
   const ownsTab = !tabId;
   try {
+    const postLoginUrl = getZenApiPostLoginUrl(domain);
     tab = tabId ? await chrome.tabs.get(tabId) : await createTemporaryBackgroundTab(`https://${domain}/login`);
     await chrome.tabs.update(tab.id, { url: buildZenApiLoginUrl(domain) });
     await ensureTabPageReady(tab.id, buildZenApiLoginUrl(domain), 20000);
@@ -1387,16 +1399,20 @@ async function autoZenApiOAuthLogin(domain, tabId = null) {
     let tabInfo = await chrome.tabs.get(tab.id);
     console.log(`[ZenAPI OAuth] 当前页面: ${tabInfo.url}`);
 
-    if (isTargetDomainLoginPage(tabInfo.url, domain)) {
-      const clicked = await clickSiteLinuxDoLoginButton(tab.id, 'ZenAPI OAuth');
-      if (clicked) {
-        await sleep(1000);
-        await waitForTabUrlChange(tab.id, tabInfo.url, 10000);
-        await waitForTabComplete(tab.id, 20000);
-        await waitForUsableTabPage(tab.id, 20000);
-        tabInfo = await chrome.tabs.get(tab.id);
-        console.log(`[ZenAPI OAuth] 点击站点登录入口后页面: ${tabInfo.url}`);
+    if (isZenApiTargetLoginPage(tabInfo.url, domain)) {
+      const started = await startSiteLinuxDoOAuthFromLoginPage(
+        tab.id,
+        domain,
+        postLoginUrl,
+        'ZenAPI OAuth'
+      );
+      if (!started?.tabId) {
+        if (ownsTab) await closeTabQuietly(tab.id);
+        return null;
       }
+      tab = await chrome.tabs.get(started.tabId);
+      tabInfo = tab;
+      console.log(`[ZenAPI OAuth] 登录页 OAuth 后页面: ${tabInfo.url}`);
     }
 
     if (tabInfo.url && tabInfo.url.includes('connect.linux.do')) {
@@ -1407,7 +1423,7 @@ async function autoZenApiOAuthLogin(domain, tabId = null) {
         if (ownsTab) await closeTabQuietly(tab.id);
         return null;
       }
-      await ensureTabPageReady(tab.id, `https://${domain}/user`, 20000);
+      await ensureTabPageReady(tab.id, postLoginUrl, 20000);
       await sleep(1000);
       tabInfo = await chrome.tabs.get(tab.id);
     }
@@ -1448,7 +1464,7 @@ async function autoZenApiOAuthLogin(domain, tabId = null) {
 }
 
 function isTargetDomainLoginPage(url, domain) {
-  return isNewApiTargetLoginPage(url, domain);
+  return isNewApiTargetLoginPage(url, domain) && !extractZenApiLinuxDoToken(url);
 }
 
 function hasSub2ApiUsableAuth(headers) {
@@ -1468,6 +1484,7 @@ async function autoSub2ApiOAuthLogin(domain, tabId = null, visitUrl = null) {
   const ownsTab = !tabId;
   const startUrl = buildSub2ApiLinuxDoOAuthStartUrl(domain, visitUrl);
   try {
+    const postLoginUrl = getSub2ApiPostLoginUrl(domain, visitUrl);
     tab = tabId ? await chrome.tabs.get(tabId) : await createTemporaryBackgroundTab(startUrl);
     console.log(`[Sub2API OAuth] 打开 OAuth start 入口: ${startUrl}`);
     await chrome.tabs.update(tab.id, { url: startUrl, active: false });
@@ -1477,6 +1494,22 @@ async function autoSub2ApiOAuthLogin(domain, tabId = null, visitUrl = null) {
     let tabInfo = await chrome.tabs.get(tab.id);
     console.log(`[Sub2API OAuth] OAuth start 后页面: ${tabInfo.url}`);
 
+    if (isSub2ApiTargetLoginPage(tabInfo.url, domain)) {
+      const started = await startSiteLinuxDoOAuthFromLoginPage(
+        tab.id,
+        domain,
+        postLoginUrl,
+        'Sub2API OAuth'
+      );
+      if (!started?.tabId) {
+        if (ownsTab) await closeTabQuietly(tab.id);
+        return null;
+      }
+      tab = await chrome.tabs.get(started.tabId);
+      tabInfo = tab;
+      console.log(`[Sub2API OAuth] 登录页 OAuth 后页面: ${tabInfo.url}`);
+    }
+
     if (tabInfo.url && tabInfo.url.includes('connect.linux.do')) {
       await clickLinuxDoAuthorizeButton(tab.id);
       const redirected = await waitForTabUrlMatch(tab.id, domain, 30000);
@@ -1485,7 +1518,7 @@ async function autoSub2ApiOAuthLogin(domain, tabId = null, visitUrl = null) {
         if (ownsTab) await closeTabQuietly(tab.id);
         return null;
       }
-      await ensureTabPageReady(tab.id, `https://${domain}/`, 20000);
+      await ensureTabPageReady(tab.id, postLoginUrl, 20000);
       await sleep(1000);
       tabInfo = await chrome.tabs.get(tab.id);
     }
@@ -1500,7 +1533,7 @@ async function autoSub2ApiOAuthLogin(domain, tabId = null, visitUrl = null) {
     }
 
     tabInfo = await chrome.tabs.get(tab.id);
-    if (tabInfo.url?.includes(domain) && !isTargetDomainLoginPage(tabInfo.url, domain)) {
+    if (tabInfo.url?.includes(domain) && !isSub2ApiTargetLoginPage(tabInfo.url, domain)) {
       console.log('[Sub2API OAuth] 未读取到 auth_token，改用当前标签页 session 签到');
       return { headers: { _tabId: tab.id, _sub2ApiSessionAuth: true }, tabId: tab.id };
     }
@@ -1512,28 +1545,6 @@ async function autoSub2ApiOAuthLogin(domain, tabId = null, visitUrl = null) {
     console.warn('[Sub2API OAuth] 登录失败:', e);
     if (ownsTab) await closeTabQuietly(tab?.id);
     return null;
-  }
-}
-
-function buildSub2ApiLinuxDoOAuthStartUrl(domain, visitUrl = null) {
-  const redirect = getSub2ApiOAuthRedirect(visitUrl);
-  const params = new URLSearchParams({ redirect });
-  return `https://${domain}/api/v1/auth/oauth/linuxdo/start?${params.toString()}`;
-}
-
-function getSub2ApiOAuthRedirect(currentUrl = '') {
-  try {
-    const parsed = new URL(currentUrl || '');
-    const redirect = parsed.searchParams.get('redirect');
-    if (redirect && redirect.startsWith('/')) return redirect;
-
-    if (parsed.pathname && !/^\/login(?:\/|$)/i.test(parsed.pathname)) {
-      return `${parsed.pathname}${parsed.search || ''}${parsed.hash || ''}` || '/check-in';
-    }
-
-    return '/check-in';
-  } catch (e) {
-    return '/check-in';
   }
 }
 
