@@ -1229,7 +1229,7 @@ async function checkInFromOfficialPage(site, tabSession = null, options = {}) {
           if (hasCheckedInText()) {
             return {
               kind: 'success',
-              message: clickedText ? `签到成功: ${clickedText}` : '签到成功',
+              message: '签到成功',
               data: { clickedText }
             };
           }

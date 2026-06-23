@@ -154,11 +154,13 @@
     .site-mode:focus-visible,
     .site-actions-button:focus-visible,
     .site-actions-menu-item:focus-visible,
+    .popup-dialog-button:focus-visible,
     .toggle:focus-visible,
     .visit-only input:focus-visible {
       outline: 2px solid var(--focus-outline);
       outline-offset: 2px;
     }
+    .popup-dialog-input:focus-visible,
     .add-form input[type="text"]:focus-visible,
     .settings-row input[type="time"]:focus-visible {
       outline: none;
@@ -486,6 +488,139 @@
         box-shadow: 0 12px 24px rgba(0,0,0,0.34);
       }
     }
+    .popup-dialog-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 60;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      background: rgba(24,24,27,0.24);
+      opacity: 0;
+      backdrop-filter: blur(0);
+      -webkit-backdrop-filter: blur(0);
+      transition:
+        opacity 160ms cubic-bezier(0.25, 1, 0.5, 1),
+        backdrop-filter 180ms cubic-bezier(0.25, 1, 0.5, 1),
+        -webkit-backdrop-filter 180ms cubic-bezier(0.25, 1, 0.5, 1);
+    }
+    .popup-dialog-backdrop.is-open {
+      opacity: 1;
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+    }
+    .popup-dialog-backdrop.is-closing {
+      opacity: 0;
+      backdrop-filter: blur(0);
+      -webkit-backdrop-filter: blur(0);
+    }
+    .popup-dialog {
+      width: min(100%, 360px);
+      max-height: calc(100vh - 32px);
+      overflow: auto;
+      padding: 14px;
+      border: 1px solid var(--surface-border);
+      border-radius: 8px;
+      background: var(--surface);
+      color: var(--text);
+      box-shadow: var(--shadow);
+      opacity: 0;
+      transform: translateY(8px) scale(0.98);
+      transition:
+        opacity 180ms cubic-bezier(0.22, 1, 0.36, 1),
+        transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+      will-change: opacity, transform;
+    }
+    .popup-dialog-backdrop.is-open .popup-dialog {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+    .popup-dialog-backdrop.is-closing .popup-dialog {
+      opacity: 0;
+      transform: translateY(6px) scale(0.985);
+      transition-duration: 120ms;
+    }
+    .popup-dialog-title {
+      margin: 0 0 8px;
+      font-size: 14px;
+      line-height: 1.35;
+      color: var(--text);
+    }
+    .popup-dialog-message {
+      margin: 0 0 12px;
+      color: var(--text-soft);
+      font-size: 12px;
+      line-height: 1.55;
+      white-space: pre-line;
+    }
+    .popup-dialog-field {
+      display: grid;
+      gap: 6px;
+      margin: 0 0 12px;
+    }
+    .popup-dialog-label {
+      color: var(--text-muted);
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .popup-dialog-error {
+      margin: -2px 0 12px;
+      padding: 7px 9px;
+      border-radius: 6px;
+      background: var(--danger-bg);
+      color: var(--danger-text);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .popup-dialog-error[hidden] {
+      display: none;
+    }
+    .popup-dialog-actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+    .popup-dialog-button {
+      min-width: 72px;
+      min-height: 32px;
+      padding: 7px 11px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .popup-dialog-button.primary {
+      background: var(--primary);
+      color: var(--on-primary);
+    }
+    .popup-dialog-button.secondary {
+      background: var(--tertiary-button-bg);
+      color: var(--tertiary-button-text);
+    }
+    .popup-dialog-button.danger {
+      background: var(--danger);
+      color: #ffffff;
+    }
+    .popup-dialog-button:hover {
+      filter: brightness(0.96);
+    }
+    @media (prefers-color-scheme: dark) {
+      .popup-dialog-backdrop {
+        background: rgba(0,0,0,0.48);
+      }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .popup-dialog-backdrop,
+      .popup-dialog {
+        transition: none;
+      }
+      .popup-dialog {
+        transform: none;
+      }
+    }
     .empty-state {
       padding: 16px 10px 8px;
       text-align: center;
@@ -527,7 +662,8 @@
     .visit-only input {
       cursor: pointer;
     }
-    .add-form input[type="text"] {
+    .add-form input[type="text"],
+    .popup-dialog-input {
       width: 100%;
       padding: 8px 10px;
       border: 1px solid var(--input-border);
@@ -537,12 +673,14 @@
       background: var(--surface);
       color: var(--text);
     }
-    .add-form input[type="text"]:focus {
+    .add-form input[type="text"]:focus,
+    .popup-dialog-input:focus {
       border: 2px solid var(--input-focus-border);
       padding: 7px 9px;
       box-shadow: none;
     }
-    .add-form input[type="text"]::placeholder { color: var(--text-muted); }
+    .add-form input[type="text"]::placeholder,
+    .popup-dialog-input::placeholder { color: var(--text-muted); }
     .add-form .form-actions {
       display: flex;
       gap: 8px;
@@ -719,6 +857,7 @@
   <script src="render-guard.js"></script>
   <script src="human-focus-toggle.js"></script>
   <script src="site-actions.js"></script>
+  <script src="popup-dialog.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

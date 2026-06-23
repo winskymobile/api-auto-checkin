@@ -58,7 +58,7 @@
       ...result,
       success: true,
       alreadyCheckedIn: false,
-      message: `签到成功: ${clickedText}`,
+      message: '签到成功',
       fallbackClicked: true
     };
   }

@@ -399,7 +399,13 @@ async function handleToggleSiteMode(index) {
   const site = sites[index];
   if (!site) return;
 
-  if (!confirm(buildModeSwitchConfirmationMessage(site))) return;
+  const confirmed = await showPopupConfirm({
+    title: '切换站点模式',
+    message: buildModeSwitchConfirmationMessage(site),
+    confirmText: '切换',
+    cancelText: '取消'
+  });
+  if (!confirmed) return;
 
   sites[index] = getSwitchedSiteMode(site);
   await saveSitesConfig(sites);
@@ -425,12 +431,12 @@ function openSiteActionMenu(index, anchor) {
   const rename = document.createElement('button');
   rename.type = 'button';
   rename.className = 'site-actions-menu-item';
-  rename.textContent = '修改名称';
+  rename.textContent = '修改';
   rename.setAttribute('role', 'menuitem');
   rename.addEventListener('click', async (event) => {
     event.stopPropagation();
     closeSiteActionMenu();
-    await renameSite(index);
+    await editSite(index);
   });
 
   const remove = document.createElement('button');
@@ -479,15 +485,36 @@ function handleSiteActionMenuKeyDown(event) {
   }
 }
 
-async function renameSite(index) {
+async function editSite(index) {
   const sites = await loadRawSites();
   const site = sites[index];
   if (!site) return;
 
-  const nextName = normalizeSiteRename(prompt('修改名称', getSiteDisplayName(site)));
-  if (!nextName) return;
+  const values = await showPopupForm({
+    title: '修改',
+    fields: [
+      {
+        name: 'name',
+        label: '站点名称',
+        defaultValue: getSiteDisplayName(site)
+      },
+      {
+        name: 'pageUrl',
+        label: '签到页地址',
+        defaultValue: getSitePageUrl(site),
+        placeholder: 'https://example.com/console/personal'
+      }
+    ],
+    confirmText: '保存',
+    cancelText: '取消',
+    validate: formValues => buildEditedSiteConfig(site, formValues, sites, index).error
+  });
+  if (!values) return;
 
-  sites[index] = { ...site, name: nextName };
+  const result = buildEditedSiteConfig(site, values, sites, index);
+  if (result.error) return;
+
+  sites[index] = result.site;
   await saveSitesConfig(sites);
   await renderSites(undefined, { preserveScroll: true });
 }
@@ -498,7 +525,14 @@ async function removeSite(index) {
   const site = sites[index];
   if (!site) return;
 
-  if (!confirm(`确定删除 ${getSiteDisplayName(site)}？`)) return;
+  const confirmed = await showPopupConfirm({
+    title: '删除站点',
+    message: `确定删除 ${getSiteDisplayName(site)}？`,
+    confirmText: '删除',
+    cancelText: '取消',
+    danger: true
+  });
+  if (!confirmed) return;
 
   sites.splice(index, 1);
   await saveSitesConfig(sites);
@@ -779,16 +813,30 @@ async function handleImport(event) {
       return;
     }
 
-    if (!confirm(`将导入 ${validSites.length} 个站点，是否继续？`)) {
+    const confirmed = await showPopupConfirm({
+      title: '导入站点',
+      message: `将导入 ${validSites.length} 个站点，是否继续？`,
+      confirmText: '继续',
+      cancelText: '取消'
+    });
+    if (!confirmed) {
       return;
     }
 
     const currentSites = await loadRawSites();
     let importMode = 'replace';
     if (currentSites.length > 0) {
-      importMode = confirm(
-        `当前有 ${currentSites.length} 个站点，是否覆盖？\n\n点击"确定"覆盖，点击"取消"合并`
-      ) ? 'replace' : 'merge';
+      const importChoice = await showPopupChoice({
+        title: '导入方式',
+        message: `当前有 ${currentSites.length} 个站点，请选择导入方式。`,
+        primaryText: '覆盖',
+        secondaryText: '合并',
+        primaryVariant: 'danger'
+      });
+      if (!importChoice) {
+        return;
+      }
+      importMode = importChoice === 'primary' ? 'replace' : 'merge';
     }
 
     const importResult = buildImportSites(currentSites, validSites, importMode);

@@ -49,14 +49,51 @@
     return name || null;
   }
 
+  function buildEditedSiteConfig(site = {}, values = {}, allSites = [], currentIndex = -1) {
+    const name = normalizeSiteRename(values.name);
+    if (!name) {
+      return { site: null, error: '请输入站点名称' };
+    }
+
+    const mode = site.mode === 'visit' ? 'visit' : 'checkin';
+    const type = site.type || 'auto';
+    const parsedSite = typeof root.parseSiteInput === 'function'
+      ? root.parseSiteInput(values.pageUrl, mode, type)
+      : null;
+    if (!parsedSite) {
+      return { site: null, error: '请输入有效的签到页链接，如 c.com/console/personal' };
+    }
+
+    const nextDomain = String(parsedSite.domain || '').toLowerCase();
+    const duplicate = Array.isArray(allSites) && allSites.some((candidate, index) => {
+      if (index === currentIndex) return false;
+      return String(candidate?.domain || '').toLowerCase() === nextDomain;
+    });
+    if (duplicate) {
+      return { site: null, error: '该站点已存在' };
+    }
+
+    return {
+      site: {
+        ...site,
+        ...parsedSite,
+        name,
+        enabled: site.enabled !== false
+      },
+      error: null
+    };
+  }
+
   root.getSiteActionDisplayName = getSiteActionDisplayName;
   root.getSiteModeView = getSiteModeView;
   root.getSwitchedSiteMode = getSwitchedSiteMode;
   root.buildModeSwitchConfirmationMessage = buildModeSwitchConfirmationMessage;
   root.normalizeSiteRename = normalizeSiteRename;
+  root.buildEditedSiteConfig = buildEditedSiteConfig;
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
+      buildEditedSiteConfig,
       buildModeSwitchConfirmationMessage,
       getSiteActionDisplayName,
       getSiteModeView,
